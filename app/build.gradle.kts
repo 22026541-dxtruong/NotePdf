@@ -15,7 +15,7 @@ android {
 
     defaultConfig {
         applicationId = "ie.app.notepdf"
-        minSdk = 24
+        minSdk = 31
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -58,8 +58,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
 
     //Pdf
-    implementation(libs.androidx.pdf.viewer)
     implementation(libs.androidx.pdf.compose)
+    implementation(libs.androidx.pdf.ink)
     //Nav3
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.navigation3.runtime)
@@ -73,6 +73,10 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.room.ktx)
+    //ML Kit
+    implementation(libs.digital.ink.recognition)
+    //Coil
+    implementation(libs.coil.compose)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

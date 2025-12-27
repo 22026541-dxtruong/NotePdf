@@ -17,7 +17,7 @@ import kotlinx.serialization.Serializable
 data object Home : NavKey
 
 @Serializable
-data class Pdf(val pdfUri: String) : NavKey
+data class Pdf(val documentId: Long) : NavKey
 
 @Serializable
 data object Setting : NavKey
@@ -39,11 +39,12 @@ fun NotePdfNav(
         entryProvider = entryProvider {
             entry<Home> {
                 HomeScreen(
-                    onSettingClick = { backStack.add(Setting) }
+                    onSettingClick = { backStack.add(Setting) },
+                    onPdfClick = { backStack.add(Pdf(it.id)) }
                 )
             }
             entry<Pdf> { key ->
-                PdfScreen()
+                PdfScreen(null)
             }
             entry<Setting> {
                 SettingScreen()

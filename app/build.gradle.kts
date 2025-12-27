@@ -59,7 +59,9 @@ dependencies {
 
     //Pdf
     implementation(libs.androidx.pdf.compose)
+    implementation(libs.androidx.pdf.viewer.fragment)
     implementation(libs.androidx.pdf.ink)
+    implementation(libs.androidx.pdf.document.service)
     //Nav3
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.navigation3.runtime)
@@ -77,6 +79,8 @@ dependencies {
     implementation(libs.digital.ink.recognition)
     //Coil
     implementation(libs.coil.compose)
+    implementation(libs.androidx.core.splashscreen)
+    implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

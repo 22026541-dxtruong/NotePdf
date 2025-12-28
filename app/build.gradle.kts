@@ -77,6 +77,7 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     //ML Kit
     implementation(libs.digital.ink.recognition)
+    implementation(libs.text.recognition)
     //Coil
     implementation(libs.coil.compose)
     implementation(libs.androidx.core.splashscreen)

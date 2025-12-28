@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material3.BottomSheetDefaults
@@ -56,12 +58,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberSearchBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,6 +81,9 @@ import coil3.compose.AsyncImage
 import ie.app.notepdf.R
 import ie.app.notepdf.data.local.entity.Document
 import ie.app.notepdf.data.local.entity.Folder
+import ie.app.notepdf.data.local.relation.FoldersAndDocuments
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 
 enum class View {
@@ -94,6 +101,7 @@ fun HomeScreen(
     val context = LocalContext.current
 
     val uiState by viewModel.uiState.collectAsState()
+    val searchResult by viewModel.searchResult.collectAsState()
 
     var view by remember { mutableStateOf(View.LIST) }
     var selectedFolder by remember { mutableStateOf<Folder?>(null) }
@@ -191,7 +199,15 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            HomeTopBar(onSettingClick = onSettingClick)
+            HomeTopBar(
+                searchResult = searchResult,
+                onSearchQueryChanged = viewModel::onSearchQueryChanged,
+                openFile = onPdfClick,
+                enterFolder = { folderId, _ ->
+                    viewModel.getFolderStackAndEnterFolder(folderId)
+                },
+                onSettingClick = onSettingClick
+            )
         },
         floatingActionButton = {
             FabMenu(
@@ -214,7 +230,7 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextButton(
-                    onClick = {  }
+                    onClick = { }
                 ) {
                     Text("Tên")
                 }
@@ -246,7 +262,7 @@ fun HomeScreen(
             AnimatedContent(
                 targetState = view == View.GRID
             ) {
-                when(it) {
+                when (it) {
                     true -> HomeGridLayout(
                         folderWithSub = uiState.folderWithSub,
                         enterFolder = viewModel::enterFolder,
@@ -270,51 +286,65 @@ fun HomeScreen(
                             showFolderSheet = true
                         }
                     )
+
                     false -> HomeLinearLayout(
-                            folderWithSub = uiState.folderWithSub,
-                            enterFolder = viewModel::enterFolder,
-                            deleteFolder = viewModel::deleteFolder,
-                            editFolderName = {
-                                selectedFolder = it
-                                openRenameDialog = true
-                            },
-                            moveFolder = {
-                                selectedFolder = it
-                                showFolderSheet = true
-                            },
-                            deleteFile = viewModel::deleteFile,
-                            editFileName = {
-                                selectedDocument = it
-                                openRenameDialog = true
-                            },
-                            openFile = onPdfClick,
-                            moveFile = {
-                                selectedDocument = it
-                                showFolderSheet = true
-                            }
-                        )
+                        folderWithSub = uiState.folderWithSub,
+                        enterFolder = viewModel::enterFolder,
+                        deleteFolder = viewModel::deleteFolder,
+                        editFolderName = {
+                            selectedFolder = it
+                            openRenameDialog = true
+                        },
+                        moveFolder = {
+                            selectedFolder = it
+                            showFolderSheet = true
+                        },
+                        deleteFile = viewModel::deleteFile,
+                        editFileName = {
+                            selectedDocument = it
+                            openRenameDialog = true
+                        },
+                        openFile = onPdfClick,
+                        moveFile = {
+                            selectedDocument = it
+                            showFolderSheet = true
+                        }
+                    )
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
 fun HomeTopBar(
-    modifier: Modifier = Modifier,
-    onSettingClick: () -> Unit = {}
+    searchResult: FoldersAndDocuments,
+    onSearchQueryChanged: (String) -> Unit,
+    enterFolder: (Long, String) -> Unit = { _, _ -> },
+    openFile: (Document) -> Unit = {},
+    onSettingClick: () -> Unit = {},
+    modifier: Modifier = Modifier
 ) {
+
     val searchBarState = rememberSearchBarState()
     val textFieldState = rememberTextFieldState()
     val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        snapshotFlow { textFieldState.text.toString() }
+            .debounce(500)
+            .collect { query ->
+                onSearchQueryChanged(query)
+            }
+    }
 
     val inputField = @Composable {
         SearchBarDefaults.InputField(
             textFieldState = textFieldState,
             searchBarState = searchBarState,
             textStyle = MaterialTheme.typography.bodyLarge,
-            onSearch = { coroutineScope.launch { searchBarState.animateToCollapsed() } },
+            onSearch = { },
             placeholder = { Text("Tìm kiếm PDFs") },
             leadingIcon = {
                 IconButton(
@@ -375,11 +405,25 @@ fun HomeTopBar(
         state = searchBarState,
         inputField = inputField
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Green)
-        )
+        LazyColumn {
+            items(searchResult.folders, key = { folder -> "folder-${folder.id}" }) {
+                FolderListItem(
+                    folder = it,
+                    enterFolder = { folderId, folderName ->
+                        enterFolder(folderId, folderName)
+                        coroutineScope.launch {
+                            searchBarState.animateToCollapsed()
+                        }
+                    },
+                )
+            }
+            items(searchResult.documents, key = { pdf -> "file-${pdf.id}" }) {
+                FileListItem(
+                    file = it,
+                    openFile = openFile
+                )
+            }
+        }
     }
 }
 
@@ -754,12 +798,13 @@ fun FolderBottomSheet(
             targetState = view == View.GRID,
             modifier = Modifier.weight(1f)
         ) {
-            when(it) {
+            when (it) {
                 false -> FolderListLinear(
                     folders = folders,
                     movingFolderId = movingFolderId,
                     enterFolder = enterFolder,
                 )
+
                 true -> FolderListGrid(
                     folders = folders,
                     movingFolderId = movingFolderId,

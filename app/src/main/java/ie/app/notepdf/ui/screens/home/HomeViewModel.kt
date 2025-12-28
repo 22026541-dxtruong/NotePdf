@@ -24,13 +24,17 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import androidx.core.graphics.createBitmap
+import ie.app.notepdf.data.local.relation.FoldersAndDocuments
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
 data class HomeUiState(
-    val folderStack: List<Pair<Long, String>> = emptyList(),
+    val folderStack: List<Pair<Long, String>> = listOf(1L to "Home"),
     val folderWithSub: FolderWithSub? = null,
     val isLoading: Boolean = false,
     val error: String? = null
@@ -43,6 +47,22 @@ class HomeViewModel @Inject constructor(
     private val _currentFolderId = MutableStateFlow(1L)
 
     private val _folderStack = MutableStateFlow(listOf(1L to "Home"))
+
+    private val queryFlow = MutableStateFlow("")
+
+    @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+    val searchResult = queryFlow
+        .filter { it.isNotBlank() }
+        .flatMapLatest { query ->
+            flow {
+                emit(fileSystemRepository.searchFoldersAndDocuments(query))
+            }
+        }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            FoldersAndDocuments(emptyList(), emptyList())
+        )
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val uiState: StateFlow<HomeUiState> = combine(
@@ -69,6 +89,17 @@ class HomeViewModel @Inject constructor(
         _currentFolderId.value = folderId
     }
 
+    fun getFolderStackAndEnterFolder(folderId: Long) {
+        viewModelScope.launch {
+            val stackFromDb = fileSystemRepository.getFolderStack(folderId)
+
+            val newStack = stackFromDb.map { it.id to it.name }
+            _folderStack.value = newStack
+            _currentFolderId.value = folderId
+        }
+    }
+
+
     fun goBackFolder(): Boolean {
         val stack = _folderStack.value
         if (stack.size <= 1) return false
@@ -89,6 +120,10 @@ class HomeViewModel @Inject constructor(
         _currentFolderId.value = folderId
     }
 
+    fun onSearchQueryChanged(query: String) {
+        queryFlow.value = query
+    }
+
     fun createFolder(folderName: String) {
         viewModelScope.launch {
             fileSystemRepository.insertFolder(
@@ -99,10 +134,6 @@ class HomeViewModel @Inject constructor(
 
     fun deleteFolder(folder: Folder) {
         viewModelScope.launch { fileSystemRepository.deleteFolder(folder) }
-    }
-
-    fun deleteFile(document: Document) {
-        viewModelScope.launch { fileSystemRepository.deleteDocument(document) }
     }
 
     fun editFileName(document: Document) {
@@ -180,26 +211,75 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private suspend fun copyPdfToInternalStorage(context: Context, uri: Uri, originalName: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Tạo tên file duy nhất để tránh trùng lặp (ví dụ: pdf_1735312345.pdf)
+                val uniqueFileName = "pdf_${System.currentTimeMillis()}_${originalName.filter { it.isLetterOrDigit() || it == '.' }}"
+                val destinationFile = File(context.filesDir, uniqueFileName)
+
+                context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    FileOutputStream(destinationFile).use { outputStream ->
+                        inputStream.copyTo(outputStream)
+                    }
+                }
+                destinationFile.absolutePath // Trả về đường dẫn để lưu vào database
+            } catch (e: Exception) {
+                Log.e("FileStorage", "Error copying PDF file", e)
+                null
+            }
+        }
+    }
+
     fun uploadFile(context: Context, uri: Uri, fileName: String) {
         viewModelScope.launch {
-
+            // 1. Lấy metadata (Thumbnail và số trang) từ URI gốc
             val (bitmap, pageCount) = getPdfMetadata(context, uri)
 
+            // 2. Lưu thumbnail xuống đĩa
             val thumbPath = bitmap?.let { saveThumbnailToDisk(context, it) }
 
-            val currentFolderId = _folderStack.value.last().first
+            // 3. COPY FILE GỐC VÀO BỘ NHỚ TRONG (Giải pháp cho SecurityException)
+            val internalPath = copyPdfToInternalStorage(context, uri, fileName)
 
-            val document = Document(
-                name = if (fileName.endsWith(".pdf")) fileName else "$fileName.pdf",
-                uri = uri.toString(),
-                thumbnailPath = thumbPath,
-                pageCount = pageCount,
-                parentId = currentFolderId
-            )
+            if (internalPath != null) {
+                val currentFolderId = _folderStack.value.last().first
 
-            fileSystemRepository.insertDocument(document)
+                val document = Document(
+                    name = if (fileName.endsWith(".pdf")) fileName else "$fileName.pdf",
+                    // LƯU Ý: Trường 'uri' trong bảng Document bây giờ sẽ chứa đường dẫn file nội bộ
+                    uri = internalPath,
+                    thumbnailPath = thumbPath,
+                    pageCount = pageCount,
+                    parentId = currentFolderId
+                )
+
+                fileSystemRepository.insertDocument(document)
+            } else {
+                // Xử lý lỗi nếu không copy được file
+                Log.e("Upload", "Failed to copy file to internal storage")
+            }
+
             bitmap?.recycle()
         }
     }
 
+    fun deleteFile(document: Document) {
+        viewModelScope.launch {
+            // Xóa file PDF gốc trong máy
+            document.uri.let { path ->
+                val file = File(path)
+                if (file.exists()) file.delete()
+            }
+
+            // Xóa file Thumbnail
+            document.thumbnailPath?.let { path ->
+                val file = File(path)
+                if (file.exists()) file.delete()
+            }
+
+            // Xóa trong Room
+            fileSystemRepository.deleteDocument(document)
+        }
+    }
 }

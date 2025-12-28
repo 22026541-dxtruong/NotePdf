@@ -24,7 +24,7 @@ data class Folder(
     val id: Long = 0,
     val name: String,
     @ColumnInfo(name = "parent_id", index = true)
-    val parentId: Long? = null,
+    val parentId: Long = 0,
     @ColumnInfo(name = "created_at", defaultValue = "CURRENT_TIMESTAMP")
     val createdAt: String = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
 )

@@ -3,7 +3,10 @@ package ie.app.notepdf.ui.screens.home
 import android.annotation.SuppressLint
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,7 +49,10 @@ fun HomeLinearLayout(
     openFile: (Document) -> Unit = {}
 ) {
     folderWithSub?.let {
-        LazyColumn {
+        LazyColumn(
+            contentPadding = PaddingValues(vertical = 0.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
+        ) {
             items(it.subFolders, key = { folder -> "folder-${folder.id}" }) { folder ->
                 LinearFolderItem(
                     folder,
@@ -83,71 +89,65 @@ fun LinearFolderItem(
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
+    ListItem(
+        modifier = modifier.clickable { enterFolder(folder.id, folder.name) },
+        leadingContent = {
+            Image(
+                painter = painterResource(R.drawable.baseline_folder_48),
+                contentDescription = "Folder"
+            )
 
-    Surface(
-        onClick = { enterFolder(folder.id, folder.name) },
-        shape = RoundedCornerShape(8.dp),
-        modifier = modifier
-    ) {
-        ListItem(
-            leadingContent = {
-                Image(
-                    painter = painterResource(R.drawable.baseline_folder_48),
-                    contentDescription = "Folder"
+        },
+        headlineContent = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        supportingContent = {
+            Text(folder.createdAt)
+        },
+        trailingContent = {
+            IconButton(onClick = {
+                expanded = !expanded
+            }) {
+                Icon(
+                    painter = painterResource(R.drawable.outline_more_vert_24),
+                    contentDescription = "More"
                 )
-
-            },
-            headlineContent = { Text(folder.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            supportingContent = {
-                Text(folder.createdAt)
-            },
-            trailingContent = {
-                IconButton(onClick = {
-                    expanded = !expanded
-                }) {
-                    Icon(
-                        painter = painterResource(R.drawable.outline_more_vert_24),
-                        contentDescription = "More"
-                    )
-                }
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Đổi tên") },
-                        onClick = { editFolderName(folder) },
-                        leadingIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.outline_edit_square_24),
-                                contentDescription = "Edit Name"
-                            )
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Di chuyển") },
-                        onClick = { moveFolder(folder) },
-                        leadingIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.outline_drive_file_move_24),
-                                contentDescription = "Move"
-                            )
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Xóa") },
-                        onClick = { deleteFolder(folder) },
-                        leadingIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.outline_delete_24),
-                                contentDescription = "Delete"
-                            )
-                        }
-                    )
-                }
             }
-        )
-    }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Đổi tên") },
+                    onClick = { editFolderName(folder) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_edit_square_24),
+                            contentDescription = "Edit Name"
+                        )
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Di chuyển") },
+                    onClick = { moveFolder(folder) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_drive_file_move_24),
+                            contentDescription = "Move"
+                        )
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Xóa") },
+                    onClick = { deleteFolder(folder) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_delete_24),
+                            contentDescription = "Delete"
+                        )
+                    }
+                )
+            }
+        }
+    )
 }
 
 @Composable
@@ -161,8 +161,143 @@ fun LinearFileItem(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
+    ListItem(
+        modifier = modifier.clickable { openFile(pdf) },
+        leadingContent = {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(MaterialTheme.shapes.medium)
+                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .wrapContentSize()
+            ) {
+                Image(
+                    painter = painterResource(R.drawable.baseline_picture_as_pdf_24),
+                    contentDescription = "Pdf"
+                )
+            }
+        },
+        headlineContent = { Text(pdf.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        supportingContent = {
+            Text(pdf.createdAt)
+        },
+        trailingContent = {
+            IconButton(onClick = {
+                expanded = !expanded
+            }) {
+                Icon(
+                    painter = painterResource(R.drawable.outline_more_vert_24),
+                    contentDescription = "More"
+                )
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Đổi tên") },
+                    onClick = { editFileName(pdf) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_edit_square_24),
+                            contentDescription = "Edit Name"
+                        )
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Di chuyển") },
+                    onClick = { moveFile(pdf) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_drive_file_move_24),
+                            contentDescription = "Move"
+                        )
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Xóa") },
+                    onClick = { deleteFile(pdf) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_delete_24),
+                            contentDescription = "Delete"
+                        )
+                    }
+                )
+            }
+        }
+    )
+    
+}
+
+@Composable
+fun FolderListLinear(
+    folders: List<Folder>,
+    movingFolderId: Long? = null,
+    enterFolder: (Long, String) -> Unit,
+    @SuppressLint("ModifierParameter") modifier: Modifier = Modifier
+) {
+    LazyColumn(
+        modifier = modifier
+    ) {
+        items(folders, key = { folder -> "folder-${folder.id}" }) { folder ->
+            Surface(
+                onClick = { enterFolder(folder.id, folder.name) },
+                shape = RoundedCornerShape(8.dp),
+                enabled = movingFolderId != folder.id,
+                modifier = Modifier.alpha(if (movingFolderId == folder.id) 0.5f else 1f)
+            ) {
+                ListItem(
+                    leadingContent = {
+                        Image(
+                            painter = painterResource(R.drawable.baseline_folder_48),
+                            contentDescription = "Folder"
+                        )
+                    },
+                    headlineContent = { Text(folder.name) },
+                    supportingContent = {
+                        Text(folder.createdAt)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun FolderListItem(
+    folder: Folder,
+    enterFolder: (Long, String) -> Unit,
+    modifier: Modifier = Modifier
+) {
     Surface(
-        onClick = { openFile(pdf) },
+        onClick = { enterFolder(folder.id, folder.name) },
+        shape = RoundedCornerShape(8.dp),
+        modifier = modifier
+    ) {
+        ListItem(
+            leadingContent = {
+                Image(
+                    painter = painterResource(R.drawable.baseline_folder_48),
+                    contentDescription = "Folder"
+                )
+            },
+            headlineContent = { Text(folder.name) },
+            supportingContent = {
+                Text(folder.createdAt)
+            },
+        )
+    }
+}
+
+@Composable
+fun FileListItem(
+    file: Document,
+    openFile: (Document) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = { openFile(file) },
         shape = RoundedCornerShape(8.dp),
         modifier = modifier
     ) {
@@ -181,90 +316,10 @@ fun LinearFileItem(
                     )
                 }
             },
-            headlineContent = { Text(pdf.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            headlineContent = { Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
             supportingContent = {
-                Text(pdf.createdAt)
+                Text(file.createdAt)
             },
-            trailingContent = {
-                IconButton(onClick = {
-                    expanded = !expanded
-                }) {
-                    Icon(
-                        painter = painterResource(R.drawable.outline_more_vert_24),
-                        contentDescription = "More"
-                    )
-                }
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Đổi tên") },
-                        onClick = { editFileName(pdf) },
-                        leadingIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.outline_edit_square_24),
-                                contentDescription = "Edit Name"
-                            )
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Di chuyển") },
-                        onClick = { moveFile(pdf) },
-                        leadingIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.outline_drive_file_move_24),
-                                contentDescription = "Move"
-                            )
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Xóa") },
-                        onClick = { deleteFile(pdf) },
-                        leadingIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.outline_delete_24),
-                                contentDescription = "Delete"
-                            )
-                        }
-                    )
-                }
-            }
         )
-    }
-}
-
-@Composable
-fun FolderListLinear(
-    folders: List<Folder>,
-    movingFolderId: Long? = null,
-    enterFolder: (Long, String) -> Unit,
-    @SuppressLint("ModifierParameter") modifier: Modifier = Modifier
-) {
-    LazyColumn(
-        modifier = modifier
-    ) {
-        items(folders) { folder ->
-            Surface(
-                onClick = { enterFolder(folder.id, folder.name) },
-                shape = RoundedCornerShape(8.dp),
-                enabled = movingFolderId != folder.id,
-                modifier = Modifier.alpha(if (movingFolderId == folder.id) 0.5f else 1f)
-            ) {
-                ListItem(
-                    leadingContent = {
-                        Image(
-                            painter = painterResource(R.drawable.baseline_folder_48),
-                            contentDescription = "Folder"
-                        )
-
-                    },
-                    headlineContent = { Text(folder.name) },
-                    supportingContent = {
-                        Text(folder.createdAt)
-                    },
-                )
-            }
-        }
     }
 }

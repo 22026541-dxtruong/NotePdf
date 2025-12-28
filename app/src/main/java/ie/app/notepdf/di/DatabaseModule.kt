@@ -23,7 +23,7 @@ object DatabaseModule {
         .addCallback(object : RoomDatabase.Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 super.onCreate(db)
-                db.execSQL("INSERT INTO folders (id, name, parent_id) VALUES (1, 'Home', NULL)")
+                db.execSQL("INSERT INTO folders (id, name, parent_id) VALUES (1, 'Home', 0)")
             }
         })
         .build()

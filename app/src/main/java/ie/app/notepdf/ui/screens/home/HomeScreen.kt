@@ -1,5 +1,9 @@
 package ie.app.notepdf.ui.screens.home
 
+import FloatingActionButtonMenu
+import FloatingActionButtonMenuItem
+import ToggleFloatingActionButton
+import ToggleFloatingActionButtonDefaults.animateIcon
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.net.Uri
@@ -7,11 +11,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -35,9 +34,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExpandedFullScreenSearchBar
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +56,7 @@ import androidx.compose.material3.rememberSearchBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -82,6 +79,12 @@ import ie.app.notepdf.R
 import ie.app.notepdf.data.local.entity.Document
 import ie.app.notepdf.data.local.entity.Folder
 import ie.app.notepdf.data.local.relation.FoldersAndDocuments
+import ie.app.notepdf.ui.component.FileListItem
+import ie.app.notepdf.ui.component.FolderListGrid
+import ie.app.notepdf.ui.component.FolderListItem
+import ie.app.notepdf.ui.component.FolderListLinear
+import ie.app.notepdf.ui.component.HomeGridLayout
+import ie.app.notepdf.ui.component.HomeLinearLayout
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
@@ -210,7 +213,7 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            FabMenu(
+            HomeFabMenu(
                 onUploadFile = { launcher.launch(arrayOf("application/pdf")) },
                 onCreateFolder = { openCreateFolderDialog = true }
             )
@@ -652,73 +655,72 @@ fun UploadFileDialog(
 }
 
 @Composable
-fun FabMenu(
+fun HomeFabMenu(
     onUploadFile: () -> Unit = {},
     onCreateFolder: () -> Unit = {}
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    var isMenuExpanded by remember { mutableStateOf(false) }
 
-    Column(
-        horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.padding(end = 16.dp, bottom = 16.dp)
-    ) {
-        AnimatedVisibility(
-            visible = expanded,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
-        ) {
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+    FloatingActionButtonMenu(
+        expanded = isMenuExpanded,
+        button = {
+            ToggleFloatingActionButton(
+                checked = isMenuExpanded,
+                onCheckedChange = { isMenuExpanded = !isMenuExpanded }
             ) {
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        onUploadFile()
-                        expanded = false
-                    },
-                    elevation = FloatingActionButtonDefaults.elevation(
-                        defaultElevation = 0.dp,
-                        pressedElevation = 0.dp,
-                        focusedElevation = 0.dp,
-                        hoveredElevation = 0.dp
-                    )
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.outline_upload_file_24),
-                        contentDescription = "Upload File"
-                    )
-                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text(text = "Tải lên")
+                // Icon thay đổi dựa trên tiến trình animation (checkedProgress)
+                val imageVector by remember(checkedProgress) {
+                    derivedStateOf {
+                        // Nếu progress > 0.5 thì hiện dấu X, ngược lại hiện dấu +
+                        if (checkedProgress > 0.5f) R.drawable.baseline_clear_24
+                        else R.drawable.outline_add_24
+                    }
                 }
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        onCreateFolder()
-                        expanded = false
-                    },
-                    elevation = FloatingActionButtonDefaults.elevation(
-                        defaultElevation = 0.dp,
-                        pressedElevation = 0.dp,
-                        focusedElevation = 0.dp,
-                        hoveredElevation = 0.dp
-                    )
+
+                // Hiệu ứng xoay icon nhẹ
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .padding(4.dp)
+                        .size(48.dp)
                 ) {
                     Icon(
-                        painter = painterResource(R.drawable.outline_create_new_folder_24),
-                        contentDescription = "Create Folder"
+                        painter = painterResource(imageVector),
+                        contentDescription = "Toggle Menu",
+                        modifier = Modifier
+                            .animateIcon({ checkedProgress })
                     )
-                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text(text = "Tạo thư mục")
                 }
             }
         }
+    ) {
+        FloatingActionButtonMenuItem(
+            onClick = {
+                isMenuExpanded = false
+                onUploadFile()
+            },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.outline_upload_file_24),
+                    contentDescription = "Upload File"
+                )
+            },
+            text = { Text(text = "Tải lên") }
+        )
 
-        FloatingActionButton(onClick = { expanded = !expanded }) {
-            Icon(
-                painter = painterResource(if (expanded) R.drawable.baseline_clear_24 else R.drawable.outline_add_24),
-                contentDescription = "Menu"
-            )
-        }
+        FloatingActionButtonMenuItem(
+            onClick = {
+                isMenuExpanded = false
+                onCreateFolder()
+            },
+            icon = {
+                Icon(
+                    painter = painterResource(R.drawable.outline_create_new_folder_24),
+                    contentDescription = "Create Folder"
+                )
+            },
+            text = { Text(text = "Tạo thư mục") }
+        )
     }
 }
 

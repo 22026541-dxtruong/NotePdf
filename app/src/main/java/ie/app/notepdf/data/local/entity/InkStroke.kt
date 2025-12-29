@@ -7,6 +7,17 @@ import androidx.room.TypeConverter
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+enum class ToolType(val value: Int) {
+    PEN(0),
+    HIGHLIGHTER(1),
+    ERASER(2), // Dùng cho logic tẩy, có thể không lưu vào DB nếu xóa trực tiếp
+    NONE(-1);
+
+    companion object {
+        fun fromValue(value: Int) = entries.find { it.value == value } ?: PEN
+    }
+}
+
 @Entity(
     tableName = "ink_strokes",
     foreignKeys = [
@@ -22,15 +33,15 @@ data class InkStroke(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     @ColumnInfo(name = "document_id", index = true)
-    val documentId: String,
+    val documentId: Long,
     @ColumnInfo(name = "page_index")
     val pageIndex: Int,
-    val color: Int, 
+    val color: Int,
     @ColumnInfo(name = "stroke_width")
     val strokeWidth: Float,
     val alpha: Float = 1.0f,
     @ColumnInfo(name = "tool_type")
-    val toolType: Int = 0,
+    val toolType: Int = ToolType.PEN.value,
     @ColumnInfo(name = "points_json")
     val pointsJson: String 
 )
@@ -55,6 +66,10 @@ class InkTypeConverters {
     @TypeConverter
     fun toPointsList(data: String): List<NormalizedPoint> {
         if (data.isEmpty()) return emptyList()
-        return json.decodeFromString(data)
+        return try {
+            json.decodeFromString(data)
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 }

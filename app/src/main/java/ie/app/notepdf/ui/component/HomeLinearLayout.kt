@@ -1,4 +1,4 @@
-package ie.app.notepdf.ui.screens.home
+package ie.app.notepdf.ui.component
 
 import android.annotation.SuppressLint
 import androidx.compose.foundation.Image

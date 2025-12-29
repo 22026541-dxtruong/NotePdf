@@ -1,10 +1,17 @@
 package ie.app.notepdf.ui.screens.pdf
 
+import ToggleFloatingActionButton
+import ToggleFloatingActionButtonDefaults.animateIcon
 import android.graphics.Bitmap
 import android.graphics.RectF
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -57,12 +64,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect as ComposeRect
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.input.pointer.pointerInput
@@ -82,6 +93,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import ie.app.notepdf.R
+import ie.app.notepdf.data.local.entity.InkStroke
+import ie.app.notepdf.data.local.entity.InkTypeConverters
+import ie.app.notepdf.data.local.entity.NormalizedPoint
+import ie.app.notepdf.data.local.entity.ToolType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -110,6 +125,8 @@ fun PdfScreen(
     val searchResults by viewModel.searchResults.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val currentMatchIndex by viewModel.currentMatchIndex.collectAsState()
+    val currentTool by viewModel.currentTool.collectAsState()
+    val inkStrokes by viewModel.inkStrokes.collectAsState()
 
     // --- State cho Zoom & Pan ---
     var scale by remember { mutableFloatStateOf(1f) }
@@ -128,6 +145,8 @@ fun PdfScreen(
 
     // Lưu kích thước màn hình
     var layoutSize by remember { mutableStateOf(IntSize.Zero) }
+
+    var boxLayoutCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
 
     // State cho LazyColumn
     val listState = rememberLazyListState()
@@ -209,8 +228,15 @@ fun PdfScreen(
                 currentMatchIndex = currentMatchIndex,
             )
         },
-        modifier = Modifier
-            .onGloballyPositioned { layoutSize = it.size }
+        floatingActionButton = {
+            PdfFabMenu(
+                listState,
+                currentTool,
+                onToolSelected = viewModel::setTool,
+                onUndo = viewModel::undo,
+                onRedo = viewModel::redo
+            )
+        }
     ) { innerPadding ->
         uiState.document?.let { document ->
             Box(
@@ -218,14 +244,18 @@ fun PdfScreen(
                     .fillMaxSize()
                     .padding(innerPadding)
                     .background(Color.LightGray)
+                    .onGloballyPositioned {
+                        layoutSize = it.size
+                        boxLayoutCoordinates = it
+                    }
             ) {
-                // 1. Lớp Nội dung (PDF + Zoom/Pan)
-                Box(
+                LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
                             detectTransformGestures { centroid, pan, zoom, _ ->
-                                if (isSelectionDragging || isHandleTouched) return@detectTransformGestures
+                                if (isSelectionDragging || isHandleTouched || currentTool != ToolType.NONE) return@detectTransformGestures
 
                                 val oldScale = scale
                                 val newScale = (scale * zoom).coerceIn(1f, 5f)
@@ -257,67 +287,86 @@ fun PdfScreen(
                                 offset = clampedOffset
                             }
                         }
-                        .pointerInput(Unit) {
-                            detectTapGestures(onDoubleTap = {
-                                scale = 1f
-                                offset = Offset.Zero
-                            })
-                        }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                            transformOrigin = TransformOrigin(0f, 0f)
+                        },
+                    userScrollEnabled = currentTool == ToolType.NONE,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(16.dp)
                 ) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                scaleX = scale
-                                scaleY = scale
-                                translationX = offset.x
-                                translationY = offset.y
-                                transformOrigin = TransformOrigin(0f, 0f)
-                            },
-                        userScrollEnabled = scale == 1f && !isSelectionDragging && !isHandleTouched,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(16.dp)
-                    ) {
-                        items(document.pageCount) { index ->
-                            val pageSelection = if (globalSelection.pageIndex == index) {
-                                globalSelection.selection
-                            } else {
-                                SelectionState()
-                            }
-                            val pageMatches = searchResults.filter { it.pageIndex == index }
-                            val focusedMatch =
-                                if (currentMatchIndex != -1 && searchResults.isNotEmpty()) {
-                                    val match = searchResults[currentMatchIndex]
-                                    if (match.pageIndex == index) match else null
-                                } else null
-                            PdfPageItem(
-                                index = index,
-                                viewModel = viewModel,
-                                currentScale = scale,
-                                selectionState = pageSelection,
-                                pageMatches = pageMatches,
-                                focusedMatch = focusedMatch,
-                                onSelectionChanged = { newSelection ->
-                                    globalSelection = GlobalSelectionState(index, newSelection)
-                                },
-                                onSelectionDragStateChange = { isDragging ->
-                                    isSelectionDragging = isDragging
-                                    if (!isDragging) dragScreenPosition = null
-                                },
-                                onDragScreenPosition = { screenPos ->
-                                    dragScreenPosition = screenPos
-                                },
-                                onHandleTouch = { isTouched ->
-                                    isHandleTouched = isTouched
-                                }
-                            )
+                    items(document.pageCount) { index ->
+                        val pageSelection = if (globalSelection.pageIndex == index) {
+                            globalSelection.selection
+                        } else {
+                            SelectionState()
                         }
+                        val pageMatches = searchResults.filter { it.pageIndex == index }
+                        val focusedMatch =
+                            if (currentMatchIndex != -1 && searchResults.isNotEmpty()) {
+                                val match = searchResults[currentMatchIndex]
+                                if (match.pageIndex == index) match else null
+                            } else null
+                        PdfPageItem(
+                            index = index,
+                            viewModel = viewModel,
+                            currentScale = scale,
+                            selectionState = pageSelection,
+                            pageMatches = pageMatches,
+                            focusedMatch = focusedMatch,
+                            currentTool = currentTool,
+                            pageStrokes = inkStrokes[index] ?: emptyList(),
+                            onSelectionChanged = { newSelection ->
+                                globalSelection = GlobalSelectionState(index, newSelection)
+                            },
+                            onSelectionDragStateChange = { isDragging ->
+                                isSelectionDragging = isDragging
+                                if (!isDragging) dragScreenPosition = null
+                            },
+                            onDragScreenPosition = { screenPos ->
+                                dragScreenPosition = screenPos
+                            },
+                            onHandleTouch = { isTouched ->
+                                isHandleTouched = isTouched
+                            },
+                            onDoubleTap = { windowTapPos ->
+                                if (currentTool == ToolType.NONE) {
+                                    boxLayoutCoordinates?.let { boxCoords ->
+                                        // Chuyển đổi tọa độ màn hình (Window) sang tọa độ của Box chứa LazyColumn
+                                        val tapInBox = boxCoords.windowToLocal(windowTapPos)
+
+                                        val targetScale = if (scale >= 5f) 1f else scale + 1f
+
+                                        if (targetScale == 1f) {
+                                            scale = 1f
+                                            offset = Offset.Zero
+                                        } else {
+                                            // Tính toán offset mới để giữ điểm chạm (tapInBox) cố định
+                                            // P_content = (P_screen - offset) / scale
+                                            // newOffset = P_screen - (P_content * newScale)
+                                            val contentPoint = (tapInBox - offset) / scale
+                                            offset = tapInBox - (contentPoint * targetScale)
+                                            scale = targetScale
+                                        }
+                                    }
+                                }
+                            },
+                            onStrokeAdded = { points, color, width, type ->
+                                viewModel.addStroke(index, points, color, width, type)
+                            },
+                            onStrokeRemoved = { stroke ->
+                                viewModel.removeStroke(stroke)
+                            }
+                        )
                     }
                 }
 
                 PdfFastScroller(
                     listState = listState,
+                    currentTool = currentTool,
                     pageCount = document.pageCount,
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
@@ -440,12 +489,150 @@ fun PdfTopBar(
     )
 }
 
+@Composable
+fun PdfFabMenu(
+    listState: LazyListState,
+    currentTool: ToolType,
+    onToolSelected: (ToolType) -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit
+) {
+    var isMenuExpand by remember { mutableStateOf(false) }
+
+    val isActive by remember {
+        derivedStateOf {
+            (listState.canScrollForward && !listState.isScrollInProgress) || isMenuExpand
+        }
+    }
+
+    val alpha by animateFloatAsState(
+        targetValue = if (isActive) 1f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "FloatActionButtonAlpha"
+    )
+
+    ToggleFloatingActionButton(
+        modifier = Modifier.alpha(alpha),
+        checked = isMenuExpand,
+        onCheckedChange = { isMenuExpand = !isMenuExpand },
+        targetWidth = if (isMenuExpand) 320.dp else 56.dp,
+        contentClickable = !isMenuExpand,
+        containerColor = ToggleFloatingActionButtonDefaults.containerColor(
+            initialColor = MaterialTheme.colorScheme.primaryContainer,
+            finalColor = MaterialTheme.colorScheme.primaryContainer
+        ),
+        contentAlignment = Alignment.CenterEnd
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.padding(end = 4.dp)
+        ) {
+            AnimatedVisibility(
+                visible = isMenuExpand,
+                enter = fadeIn() + expandHorizontally(),
+                exit = fadeOut() + shrinkHorizontally(),
+                modifier = Modifier.weight(1f)
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(4.dp)
+                ) {
+                    IconButton(
+                        onClick = { onToolSelected(ToolType.PEN) },
+                        modifier = Modifier
+                            .background(
+                                if (currentTool == ToolType.PEN) Color.White else Color.Transparent,
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_stylus_note_24),
+                            contentDescription = "Draw"
+                        )
+                    }
+                    IconButton(
+                        onClick = { onToolSelected(ToolType.HIGHLIGHTER) },
+                        modifier = Modifier
+                            .background(
+                                if (currentTool == ToolType.HIGHLIGHTER) Color.White else Color.Transparent,
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_brush_24),
+                            contentDescription = "Mark"
+                        )
+                    }
+                    IconButton(
+                        onClick = { onToolSelected(ToolType.ERASER) },
+                        modifier = Modifier
+                            .background(
+                                if (currentTool == ToolType.ERASER) Color.White else Color.Transparent,
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_ink_eraser_24),
+                            contentDescription = "Eraser"
+                        )
+                    }
+                    IconButton(onClick = onUndo) {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_undo_24),
+                            contentDescription = "Undo"
+                        )
+                    }
+                    IconButton(onClick = onRedo) {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_redo_24),
+                            contentDescription = "Redo"
+                        )
+                    }
+                }
+            }
+            val imageVector by remember(checkedProgress) {
+                derivedStateOf {
+                    if (checkedProgress > 0.5f) R.drawable.outline_visibility_24
+                    else R.drawable.outline_draw_24
+                }
+            }
+            IconButton(
+                onClick = {
+                    isMenuExpand = !isMenuExpand
+                    onToolSelected(ToolType.NONE)
+                },
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(if (isMenuExpand) Color.White else Color.Transparent, CircleShape)
+            ) {
+                Icon(
+                    painter = painterResource(imageVector),
+                    contentDescription = "Toggle Menu",
+                    modifier = Modifier
+                        .animateIcon(
+                            { checkedProgress },
+                            color = ToggleFloatingActionButtonDefaults.iconColor(
+                                initialColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                finalColor = Color.Black // Màu icon khi nền trắng
+                            )
+                        )
+                )
+            }
+        }
+    }
+}
+
 /**
  * Thanh cuộn nhanh
  */
 @Composable
 fun PdfFastScroller(
     listState: LazyListState,
+    currentTool: ToolType,
     pageCount: Int,
     modifier: Modifier = Modifier
 ) {
@@ -458,8 +645,8 @@ fun PdfFastScroller(
     // State lưu vị trí kéo hiện tại (để handle dính vào tay)
     var dragOffset by remember { mutableFloatStateOf(0f) }
 
-    LaunchedEffect(listState.isScrollInProgress, isDragging) {
-        if (listState.isScrollInProgress || isDragging) {
+    LaunchedEffect(listState.isScrollInProgress, isDragging, currentTool) {
+        if (listState.isScrollInProgress || isDragging || currentTool != ToolType.NONE) {
             isActive = true
         } else {
             delay(1500)
@@ -597,10 +784,15 @@ fun PdfPageItem(
     selectionState: SelectionState,
     pageMatches: List<SearchMatch>,
     focusedMatch: SearchMatch?,
+    currentTool: ToolType,
+    pageStrokes: List<InkStroke>,
     onSelectionChanged: (SelectionState) -> Unit,
     onSelectionDragStateChange: (Boolean) -> Unit,
     onDragScreenPosition: (Offset) -> Unit,
-    onHandleTouch: (Boolean) -> Unit
+    onHandleTouch: (Boolean) -> Unit,
+    onDoubleTap: (Offset) -> Unit,
+    onStrokeAdded: (List<NormalizedPoint>, Color, Float, ToolType) -> Unit,
+    onStrokeRemoved: (InkStroke) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -610,6 +802,8 @@ fun PdfPageItem(
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var originalImageSize by remember { mutableStateOf<IntSize?>(null) }
+
+    var currentDrawingPoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
 
     // --- TÍNH TOÁN KÍCH THƯỚC CHUẨN KHI SCALE ---
     val baseHandleRadiusDp = 10.dp
@@ -644,7 +838,6 @@ fun PdfPageItem(
                 pageLayoutCoordinates = it
             }
     ) {
-        // 1. Ảnh nền
         AsyncImage(
             model = bitmap,
             contentDescription = "Page $index",
@@ -658,9 +851,72 @@ fun PdfPageItem(
             },
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(wordsOfThisPage, viewSize) {
-                    if (viewSize.width == 0) return@pointerInput
+                .pointerInput(currentTool, viewSize) {
+                    if (currentTool == ToolType.NONE || viewSize.width == 0) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        down.consume() // CHẶN MỌI SỰ KIỆN KHÁC
+                        if (currentTool == ToolType.ERASER) {
+                            var dragging = true
+                            while (dragging) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.find { it.id == down.id }
+                                if (change == null || !change.pressed) dragging = false
+                                else {
+                                    change.consume()
+                                    val pos = change.position
+                                    // Eraser logic
+                                    val hitStroke = pageStrokes.find { stroke ->
+                                        val points =
+                                            InkTypeConverters().toPointsList(stroke.pointsJson)
+                                        points.any { p ->
+                                            val px = p.x * viewSize.width
+                                            val py = p.y * viewSize.height
+                                            hypot(px - pos.x, py - pos.y) < 50f // Hit threshold
+                                        }
+                                    }
+                                    if (hitStroke != null) onStrokeRemoved(hitStroke)
+                                }
+                            }
+                        } else {
+                            // Pen/Highlighter Logic
+                            currentDrawingPoints = listOf(down.position)
+                            var dragging = true
+                            while (dragging) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.find { it.id == down.id }
+                                if (change == null || !change.pressed) dragging = false
+                                else {
+                                    change.consume()
+                                    currentDrawingPoints = currentDrawingPoints + change.position
+                                }
+                            }
+                            if (currentDrawingPoints.size > 1) {
+                                val normalizedPoints = currentDrawingPoints.map {
+                                    NormalizedPoint(
+                                        it.x / viewSize.width.toFloat(),
+                                        it.y / viewSize.height.toFloat()
+                                    )
+                                }
+                                val color =
+                                    if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow else Color.Red
+                                val width =
+                                    if (currentTool == ToolType.HIGHLIGHTER) 0.03f else 0.005f
+                                onStrokeAdded(normalizedPoints, color, width, currentTool)
+                            }
+                            currentDrawingPoints = emptyList()
+                        }
+                    }
+                }
+                .pointerInput(wordsOfThisPage, viewSize, currentTool) {
+                    if (viewSize.width == 0 || currentTool != ToolType.NONE) return@pointerInput
                     detectTapGestures(
+                        onDoubleTap = { localOffset ->
+                            val windowPos = pageLayoutCoordinates?.localToWindow(localOffset)
+                            if (windowPos != null) {
+                                onDoubleTap(windowPos)
+                            }
+                        },
                         onTap = { onSelectionChanged(SelectionState()) },
                         onLongPress = { localOffset ->
                             val wordIndex = findWordIndexAt(localOffset, wordsOfThisPage, viewSize)
@@ -676,8 +932,8 @@ fun PdfPageItem(
                         }
                     )
                 }
-                .pointerInput(wordsOfThisPage, viewSize) {
-                    if (viewSize.width == 0) return@pointerInput
+                .pointerInput(wordsOfThisPage, viewSize, currentTool) {
+                    if (viewSize.width == 0 || currentTool != ToolType.NONE) return@pointerInput
                     detectDragGesturesAfterLongPress(
                         onDragStart = { },
                         onDrag = { change, _ ->
@@ -708,85 +964,212 @@ fun PdfPageItem(
                         }
                     )
                 }
-                .drawWithContent {
-                    drawContent()
+                .drawWithCache {
+                    // 1. CACHE STROKE PATHS (Tránh parse JSON liên tục)
+                    val strokePaths = pageStrokes.map { stroke ->
+                        val path = Path()
+                        val points = InkTypeConverters().toPointsList(stroke.pointsJson)
+                        if (points.isNotEmpty()) {
+                            val start = points.first()
+                            path.moveTo(start.x * size.width, start.y * size.height)
+                            for (i in 1 until points.size) {
+                                val p = points[i]
+                                path.lineTo(p.x * size.width, p.y * size.height)
+                            }
+                        }
+                        stroke to path
+                    }
 
-                    val selectedRects = selectionState.selectedWords.map { it.rect.toScreenRect(viewSize) }
+                    // 2. CACHE SELECTION RECTS
+                    val viewSizeInt = IntSize(size.width.toInt(), size.height.toInt())
+                    val selectedRects = selectionState.selectedWords.map { it.rect.toScreenRect(viewSizeInt) }
                     val mergedSelectionRects = mergeRectangles(selectedRects)
 
-                    mergedSelectionRects.forEach { rect ->
-                        drawRect(
-                            color = Color(0x664285F4),
-                            topLeft = rect.topLeft,
-                            size = rect.size
-                        )
-                    }
-
-                    // --- VẼ SEARCH HIGHLIGHT (ĐÃ MERGE) ---
-                    val searchHighlightColor = Color(0x66FFFF00)
-                    val focusedHighlightColor = Color(0x99FF8800)
-
-                    pageMatches.forEach { match ->
+                    // 3. CACHE SEARCH HIGHLIGHTS
+                    val cachedSearchMatches = pageMatches.map { match ->
                         val isFocused = (focusedMatch != null && focusedMatch == match)
-
-                        val matchScreenRects = match.rects.map { it.toScreenRect(viewSize) }
-                        val mergedMatchRects = mergeRectangles(matchScreenRects)
-
-                        mergedMatchRects.forEach { rect ->
-                            drawRect(
-                                color = if (isFocused) focusedHighlightColor else searchHighlightColor,
-                                topLeft = rect.topLeft,
-                                size = rect.size
-                            )
-                        }
+                        val color = if (isFocused) Color(0x99FF8800) else Color(0x66FFFF00)
+                        val rects = mergeRectangles(match.rects.map { it.toScreenRect(viewSizeInt) })
+                        Triple(rects, color, isFocused)
                     }
 
-                    if (selectionState.selectedWords.isNotEmpty()) {
+                    // 4. PREPARE HANDLE DATA
+                    val showHandles = selectionState.selectedWords.isNotEmpty()
+                    val handleData = if (showHandles) {
                         val handleColor = Color(0xFF4285F4)
                         val lineStroke = 2.dp.toPx() / currentScale
 
-                        val firstRect =
-                            selectionState.selectedWords.first().rect.toScreenRect(viewSize)
-                        val startLineTop = firstRect.topLeft
-                        val startLineBottom = firstRect.bottomLeft
-                        val startHandleCenter =
-                            startLineBottom + Offset(0f, effectiveHandleRadiusPx)
+                        val firstRect = selectionState.selectedWords.first().rect.toScreenRect(viewSizeInt)
+                        val lastRect = selectionState.selectedWords.last().rect.toScreenRect(viewSizeInt)
 
-                        drawLine(
-                            color = handleColor,
-                            start = startLineTop,
-                            end = startLineBottom,
-                            strokeWidth = lineStroke
-                        )
-                        drawCircle(
-                            color = handleColor,
-                            radius = effectiveHandleRadiusPx,
-                            center = startHandleCenter
-                        )
+                        Triple(firstRect, lastRect, object {
+                            val color = handleColor
+                            val stroke = lineStroke
+                            val radius = effectiveHandleRadiusPx
+                        })
+                    } else null
 
-                        val lastRect =
-                            selectionState.selectedWords.last().rect.toScreenRect(viewSize)
-                        val endLineTop = lastRect.topRight
-                        val endLineBottom = lastRect.bottomRight
-                        val endHandleCenter = endLineBottom + Offset(0f, effectiveHandleRadiusPx)
+                    onDrawWithContent {
+                        drawContent() // Vẽ ảnh nền
 
-                        drawLine(
-                            color = handleColor,
-                            start = endLineTop,
-                            end = endLineBottom,
-                            strokeWidth = lineStroke
-                        )
-                        drawCircle(
-                            color = handleColor,
-                            radius = effectiveHandleRadiusPx,
-                            center = endHandleCenter
-                        )
+                        // Vẽ nét mực cũ (từ cache)
+                        strokePaths.forEach { (stroke, path) ->
+                            val color = Color(stroke.color).copy(alpha = stroke.alpha)
+                            drawPath(path = path, color = color, style = Stroke(width = stroke.strokeWidth * size.width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                        }
+
+                        // Vẽ nét đang vẽ (không cache)
+                        if (currentDrawingPoints.isNotEmpty()) {
+                            val path = Path()
+                            path.moveTo(currentDrawingPoints.first().x, currentDrawingPoints.first().y)
+                            for (i in 1 until currentDrawingPoints.size) {
+                                path.lineTo(currentDrawingPoints[i].x, currentDrawingPoints[i].y)
+                            }
+                            val color = if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow.copy(alpha = 0.4f) else Color.Red
+                            val width = if (currentTool == ToolType.HIGHLIGHTER) 0.03f * size.width else 0.005f * size.width
+                            drawPath(path = path, color = color, style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                        }
+
+                        // Vẽ Selection & Search & Handles (chỉ khi không dùng tool vẽ)
+                        if (currentTool == ToolType.NONE) {
+                            // Highlight
+                            mergedSelectionRects.forEach { rect -> drawRect(color = Color(0x664285F4), topLeft = rect.topLeft, size = rect.size) }
+
+                            // Search Highlight
+                            cachedSearchMatches.forEach { (rects, color, _) ->
+                                rects.forEach { rect -> drawRect(color = color, topLeft = rect.topLeft, size = rect.size) }
+                            }
+
+                            // Handles
+                            handleData?.let { (first, last, style) ->
+                                val startHandleCenter = first.bottomLeft + Offset(0f, style.radius)
+                                drawLine(color = style.color, start = first.topLeft, end = first.bottomLeft, strokeWidth = style.stroke)
+                                drawCircle(color = style.color, radius = style.radius, center = startHandleCenter)
+
+                                val endHandleCenter = last.bottomRight + Offset(0f, style.radius)
+                                drawLine(color = style.color, start = last.topRight, end = last.bottomRight, strokeWidth = style.stroke)
+                                drawCircle(color = style.color, radius = style.radius, center = endHandleCenter)
+                            }
+                        }
                     }
                 }
+//                .drawWithContent {
+//                    drawContent() // Vẽ PDF gốc
+//                    // Vẽ các nét mực (Ink Strokes)
+//                    pageStrokes.forEach { stroke ->
+//                        val path = Path()
+//                        val points = InkTypeConverters().toPointsList(stroke.pointsJson)
+//                        if (points.isNotEmpty()) {
+//                            val start = points.first()
+//                            path.moveTo(start.x * size.width, start.y * size.height)
+//                            for (i in 1 until points.size) {
+//                                val p = points[i]
+//                                path.lineTo(p.x * size.width, p.y * size.height)
+//                            }
+//                            val color = Color(stroke.color).copy(alpha = stroke.alpha)
+//                            drawPath(
+//                                path = path,
+//                                color = color,
+//                                style = Stroke(
+//                                    width = stroke.strokeWidth * size.width,
+//                                    cap = StrokeCap.Round,
+//                                    join = StrokeJoin.Round
+//                                )
+//                            )
+//                        }
+//                    }
+//                    // Vẽ nét đang vẽ hiện tại
+//                    if (currentDrawingPoints.isNotEmpty()) {
+//                        val path = Path()
+//                        path.moveTo(currentDrawingPoints.first().x, currentDrawingPoints.first().y)
+//                        for (i in 1 until currentDrawingPoints.size) {
+//                            path.lineTo(currentDrawingPoints[i].x, currentDrawingPoints[i].y)
+//                        }
+//                        val color =
+//                            if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow.copy(alpha = 0.4f) else Color.Red
+//
+//                        val width =
+//                            if (currentTool == ToolType.HIGHLIGHTER) 0.03f * size.width else 0.005f * size.width
+//                        drawPath(
+//                            path = path,
+//                            color = color,
+//                            style = Stroke(
+//                                width = width,
+//                                cap = StrokeCap.Round,
+//                                join = StrokeJoin.Round
+//                            )
+//                        )
+//                    }
+//                    // Vẽ Selection Highlight (khi không vẽ)
+//                    if (currentTool == ToolType.NONE) {
+//                        val selectedRects =
+//                            selectionState.selectedWords.map { it.rect.toScreenRect(viewSize) }
+//                        val mergedSelectionRects = mergeRectangles(selectedRects)
+//                        mergedSelectionRects.forEach { rect ->
+//                            drawRect(
+//                                color = Color(0x664285F4),
+//                                topLeft = rect.topLeft,
+//                                size = rect.size
+//                            )
+//                        }
+//                        pageMatches.forEach { match ->
+//                            val isFocused = (focusedMatch != null && focusedMatch == match)
+//                            val matchScreenRects = match.rects.map { it.toScreenRect(viewSize) }
+//                            val mergedMatchRects = mergeRectangles(matchScreenRects)
+//                            mergedMatchRects.forEach { rect ->
+//                                drawRect(
+//                                    color = if (isFocused) Color(
+//                                        0x99FF8800
+//                                    ) else Color(0x66FFFF00),
+//                                    topLeft = rect.topLeft,
+//                                    size = rect.size
+//                                )
+//                            }
+//                        }
+//                        if (selectionState.selectedWords.isNotEmpty()) {
+//                            val handleColor = Color(0xFF4285F4)
+//                            val lineStroke = 2.dp.toPx() / currentScale
+//                            val firstRect =
+//                                selectionState.selectedWords.first().rect.toScreenRect(viewSize)
+//                            val startLineTop = firstRect.topLeft
+//                            val startLineBottom = firstRect.bottomLeft
+//                            val startHandleCenter =
+//                                startLineBottom + Offset(0f, effectiveHandleRadiusPx)
+//                            drawLine(
+//                                color = handleColor,
+//                                start = startLineTop,
+//                                end = startLineBottom,
+//                                strokeWidth = lineStroke
+//                            )
+//                            drawCircle(
+//                                color = handleColor,
+//                                radius = effectiveHandleRadiusPx,
+//                                center = startHandleCenter
+//                            )
+//                            val lastRect =
+//                                selectionState.selectedWords.last().rect.toScreenRect(viewSize)
+//                            val endLineTop = lastRect.topRight
+//                            val endLineBottom = lastRect.bottomRight
+//                            val endHandleCenter =
+//                                endLineBottom + Offset(0f, effectiveHandleRadiusPx)
+//                            drawLine(
+//                                color = handleColor,
+//                                start = endLineTop,
+//                                end = endLineBottom,
+//                                strokeWidth = lineStroke
+//                            )
+//                            drawCircle(
+//                                color = handleColor,
+//                                radius = effectiveHandleRadiusPx,
+//                                center = endHandleCenter
+//                            )
+//                        }
+//                    }
+//                }
         )
 
         // 2. Handle Touch Targets
-        if (selectionState.selectedWords.isNotEmpty() && pageLayoutCoordinates != null) {
+        if (currentTool == ToolType.NONE && selectionState.selectedWords.isNotEmpty() && pageLayoutCoordinates != null) {
             val firstRect = selectionState.selectedWords.first().rect.toScreenRect(viewSize)
             val lastRect = selectionState.selectedWords.last().rect.toScreenRect(viewSize)
 
@@ -948,8 +1331,8 @@ fun HandleTouchTarget(
     )
 }
 
-fun RectF.toScreenRect(viewSize: IntSize): ComposeRect {
-    return ComposeRect(
+fun RectF.toScreenRect(viewSize: IntSize): Rect {
+    return Rect(
         left = this.left * viewSize.width,
         top = this.top * viewSize.height,
         right = this.right * viewSize.width,
@@ -957,11 +1340,11 @@ fun RectF.toScreenRect(viewSize: IntSize): ComposeRect {
     )
 }
 
-fun mergeRectangles(rects: List<ComposeRect>): List<ComposeRect> {
+fun mergeRectangles(rects: List<Rect>): List<Rect> {
     if (rects.isEmpty()) return emptyList()
 
     val sorted = rects.sortedWith(compareBy({ it.top }, { it.left }))
-    val merged = mutableListOf<ComposeRect>()
+    val merged = mutableListOf<Rect>()
     var current = sorted[0]
 
     for (i in 1 until sorted.size) {
@@ -973,7 +1356,7 @@ fun mergeRectangles(rects: List<ComposeRect>): List<ComposeRect> {
 
         if (centerYDiff < avgHeight * 0.5f) {
             // Cùng dòng -> Gộp lại (bao gồm cả khoảng trắng ở giữa)
-            current = ComposeRect(
+            current = Rect(
                 left = minOf(current.left, next.left),
                 top = minOf(current.top, next.top),
                 right = maxOf(current.right, next.right),

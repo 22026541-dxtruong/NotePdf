@@ -9,16 +9,18 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface InkStrokeDao {
 
-    @Query("SELECT * FROM ink_strokes WHERE document_id = :docId AND page_index = :pageIdx")
-    fun getStrokesForPage(docId: String, pageIdx: Int): Flow<List<InkStroke>>
+    @Query("SELECT * FROM ink_strokes WHERE document_id = :docId")
+    fun getAllStrokesForDocument(docId: String): Flow<List<InkStroke>>
+
+    @Query("SELECT * FROM ink_strokes WHERE document_id = :docId AND page_index = :pageId")
+    fun getStrokesForPage(docId: String, pageId: Int): Flow<List<InkStroke>>
 
     @Insert
-    suspend fun insertStroke(stroke: InkStroke)
+    suspend fun insertStroke(stroke: InkStroke): Long
 
     @Query("DELETE FROM ink_strokes WHERE id = :strokeId")
     suspend fun deleteStroke(strokeId: Long)
-    
-    // Xóa hết nét vẽ của trang (Clear Page)
+
     @Query("DELETE FROM ink_strokes WHERE document_id = :docId AND page_index = :pageIdx")
     suspend fun clearPage(docId: String, pageIdx: Int)
 }

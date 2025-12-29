@@ -8,18 +8,22 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.collection.LruCache
-import androidx.lifecycle.ViewModel
-import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import javax.inject.Inject
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.createBitmap
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import dagger.hilt.android.lifecycle.HiltViewModel
 import ie.app.notepdf.data.local.entity.Document
+import ie.app.notepdf.data.local.entity.InkStroke
+import ie.app.notepdf.data.local.entity.InkTypeConverters
+import ie.app.notepdf.data.local.entity.NormalizedPoint
+import ie.app.notepdf.data.local.entity.ToolType
 import ie.app.notepdf.data.local.repository.FileSystemRepository
+import ie.app.notepdf.data.local.repository.NoteRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
@@ -28,6 +32,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -35,8 +40,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import java.io.File
+import java.util.ArrayDeque
+import javax.inject.Inject
 import kotlin.coroutines.resume
 
 data class PdfUiState(
@@ -55,24 +63,40 @@ data class SearchMatch(
     val rects: List<RectF>
 )
 
+// Sealed class for Undo/Redo operations
+sealed class InkOperation {
+    data class Added(val strokeId: Long, val stroke: InkStroke) : InkOperation()
+    data class Removed(val stroke: InkStroke) : InkOperation()
+}
+
 @HiltViewModel
 class PdfViewModel @Inject constructor(
-    private val fileSystemRepository: FileSystemRepository
+    private val fileSystemRepository: FileSystemRepository,
+    private val noteRepository: NoteRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PdfUiState())
     val uiState = _uiState.asStateFlow()
 
+    private var pdfRenderer: PdfRenderer? = null
+    private var fileDescriptor: ParcelFileDescriptor? = null
+    private val pdfMutex = Mutex()
 
     private val _pageWords = MutableStateFlow<Map<Int, List<WordInfo>>>(emptyMap())
     val pageWords = _pageWords.asStateFlow()
 
+    private val bitmapCache = LruCache<Int, Bitmap>(10)
+
+    private val extractionQueue = ArrayDeque<Pair<Int, Bitmap>>()
+    private val queueMutex = Mutex()
+    private val processingTrigger = Channel<Unit>(Channel.CONFLATED)
+
+    // --- SEARCH STATES ---
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
 
     private var fullScanJob: Job? = null
 
-    // Sử dụng combine để tự động tính toán searchResults mỗi khi query hoặc pageWords thay đổi
     val searchResults = combine(_searchQuery, _pageWords) { query, currentWords ->
         if (query.isBlank()) {
             emptyList()
@@ -82,62 +106,39 @@ class PdfViewModel @Inject constructor(
 
             for (pageIndex in sortedPages) {
                 val words = currentWords[pageIndex] ?: continue
-
-                // 1. Tái tạo văn bản đầy đủ của trang để tìm kiếm cụm từ
-                // Lưu mapping giữa index ký tự trong fullText và index của từ trong list words
                 val fullTextBuilder = StringBuilder()
                 val charToWordMap = mutableListOf<Pair<Int, WordInfo>>()
 
                 var currentCharIndex = 0
                 words.forEach { word ->
-                    // Lưu vị trí bắt đầu của từ này trong chuỗi tổng
                     charToWordMap.add(currentCharIndex to word)
-                    fullTextBuilder.append(word.text).append(" ") // Thêm dấu cách ảo
+                    fullTextBuilder.append(word.text).append(" ")
                     currentCharIndex += word.text.length + 1
                 }
 
                 val fullText = fullTextBuilder.toString()
 
-                // 2. Tìm kiếm tất cả vị trí xuất hiện của query
                 var searchIndex = 0
                 while (true) {
                     val foundStartIndex = fullText.indexOf(query, searchIndex, ignoreCase = true)
                     if (foundStartIndex == -1) break
 
                     val foundEndIndex = foundStartIndex + query.length
-
-                    // 3. Ánh xạ ngược từ vị trí ký tự về các Rect
                     val matchRects = mutableListOf<RectF>()
 
-                    // Tìm các từ bị ảnh hưởng bởi kết quả tìm kiếm này
-                    // Duyệt qua tất cả các từ để xem từ nào nằm trong khoảng [foundStartIndex, foundEndIndex]
                     for ((wordStartIndex, word) in charToWordMap) {
                         val wordEndIndex = wordStartIndex + word.text.length
-
-                        // Kiểm tra giao nhau giữa từ hiện tại và vùng tìm thấy
                         val intersectStart = maxOf(foundStartIndex, wordStartIndex)
                         val intersectEnd = minOf(foundEndIndex, wordEndIndex)
 
                         if (intersectStart < intersectEnd) {
-                            // Từ này chứa một phần hoặc toàn bộ query
-
-                            // Tính toán vị trí tương đối trong từ (0..length)
                             val localStart = intersectStart - wordStartIndex
                             val localEnd = intersectEnd - wordStartIndex
-
-                            // Nội suy Rect (Interpolation)
-                            // Giả sử các ký tự có độ rộng bằng nhau (xấp xỉ)
                             val charWidth = word.rect.width() / word.text.length
-
                             val highlightLeft = word.rect.left + (localStart * charWidth)
                             val highlightRight = word.rect.left + (localEnd * charWidth)
 
-                            val highlightRect = RectF(
-                                highlightLeft,
-                                word.rect.top,
-                                highlightRight,
-                                word.rect.bottom
-                            )
+                            val highlightRect = RectF(highlightLeft, word.rect.top, highlightRight, word.rect.bottom)
                             matchRects.add(highlightRect)
                         }
                     }
@@ -145,7 +146,6 @@ class PdfViewModel @Inject constructor(
                     if (matchRects.isNotEmpty()) {
                         matches.add(SearchMatch(pageIndex, matchRects))
                     }
-
                     searchIndex = foundStartIndex + 1
                 }
             }
@@ -153,83 +153,126 @@ class PdfViewModel @Inject constructor(
         }
     }
         .flowOn(Dispatchers.Default)
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+        .stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5000), initialValue = emptyList())
 
     private val _currentMatchIndex = MutableStateFlow(-1)
     val currentMatchIndex = _currentMatchIndex.asStateFlow()
 
-    private var pdfRenderer: PdfRenderer? = null
-    private var fileDescriptor: ParcelFileDescriptor? = null
+    // --- DRAWING STATES ---
+    private val _currentTool = MutableStateFlow(ToolType.NONE)
+    val currentTool = _currentTool.asStateFlow()
 
-    private val pdfMutex = Mutex()
-    private val bitmapCache = LruCache<Int, Bitmap>(10)
+    private val _inkStrokesFromDb = MutableStateFlow<List<InkStroke>>(emptyList())
 
-    private val extractionQueue = ArrayDeque<Pair<Int, Bitmap>>()
-    private val queueMutex = Mutex() // Lock riêng cho queue để không ảnh hưởng PDF Renderer
-    // Channel dùng làm tín hiệu đánh thức (Wake-up signal) cho worker
-    private val processingTrigger = Channel<Unit>(Channel.CONFLATED)
+    val inkStrokes = _inkStrokesFromDb.map { list ->
+        list.groupBy { it.pageIndex }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
-    init {
-        // Khởi chạy Consumer Loop để xử lý các yêu cầu từ Queue
-        processTextExtractionQueue()
+    private val undoStack = ArrayDeque<InkOperation>()
+    private val redoStack = ArrayDeque<InkOperation>()
+
+    private val jsonConverter = InkTypeConverters()
+    private var loadStrokesJob: Job? = null
+
+    // --- DRAWING LOGIC ---
+    fun setTool(tool: ToolType) {
+        _currentTool.value = tool
+    }
+
+    fun addStroke(pageIndex: Int, points: List<NormalizedPoint>, color: androidx.compose.ui.graphics.Color, width: Float, toolType: ToolType) {
+        val currentDocId = _uiState.value.document?.id ?: return
+
+        val stroke = InkStroke(
+            documentId = currentDocId,
+            pageIndex = pageIndex,
+            color = color.toArgb(),
+            strokeWidth = width,
+            toolType = toolType.value,
+            pointsJson = jsonConverter.fromPointsList(points),
+            alpha = if (toolType == ToolType.HIGHLIGHTER) 0.4f else 1.0f
+        )
+        _inkStrokesFromDb.update { it + stroke }
 
         viewModelScope.launch {
-            _searchQuery.collect {
-                _currentMatchIndex.value = -1
+            val newId = noteRepository.insertStroke(stroke)
+            val savedStroke = stroke.copy(id = newId)
+
+            undoStack.addLast(InkOperation.Added(newId, savedStroke))
+            redoStack.clear()
+        }
+    }
+
+    fun removeStroke(stroke: InkStroke) {
+        viewModelScope.launch {
+            noteRepository.deleteStroke(stroke.id)
+            undoStack.addLast(InkOperation.Removed(stroke))
+            redoStack.clear()
+        }
+    }
+
+    fun undo() {
+        if (undoStack.isEmpty()) return
+        val operation = undoStack.removeLast()
+
+        viewModelScope.launch {
+            when (operation) {
+                is InkOperation.Added -> {
+                    // Undo Add = Delete
+                    noteRepository.deleteStroke(operation.strokeId)
+                    redoStack.addLast(operation)
+                }
+                is InkOperation.Removed -> {
+                    // Undo Remove = Insert back
+                    val newId = noteRepository.insertStroke(operation.stroke)
+                    // Update the operation with the new ID for future redo/undo cycles
+                    val updatedStroke = operation.stroke.copy(id = newId)
+                    redoStack.addLast(InkOperation.Removed(updatedStroke))
+                }
             }
         }
+    }
 
-        // Tự động chọn kết quả đầu tiên (index 0) nếu có kết quả tìm thấy và chưa chọn gì
+    fun redo() {
+        if (redoStack.isEmpty()) return
+        val operation = redoStack.removeLast()
+
+        viewModelScope.launch {
+            when (operation) {
+                is InkOperation.Added -> {
+                    // Redo Add = Insert again
+                    val newId = noteRepository.insertStroke(operation.stroke)
+                    val updatedStroke = operation.stroke.copy(id = newId)
+                    undoStack.addLast(InkOperation.Added(newId, updatedStroke))
+                }
+                is InkOperation.Removed -> {
+                    // Redo Remove = Delete again
+                    noteRepository.deleteStroke(operation.stroke.id)
+                    undoStack.addLast(operation)
+                }
+            }
+        }
+    }
+
+    // --- INIT & LOAD ---
+    init {
+        processTextExtractionQueue()
+        viewModelScope.launch {
+            _searchQuery.collect { _currentMatchIndex.value = -1 }
+        }
         viewModelScope.launch {
             searchResults.collect { matches ->
-                if (matches.isNotEmpty() && _currentMatchIndex.value == -1) {
-                    _currentMatchIndex.value = 0
-                } else if (matches.isEmpty()) {
-                    _currentMatchIndex.value = -1
-                }
+                if (matches.isNotEmpty() && _currentMatchIndex.value == -1) _currentMatchIndex.value = 0
+                else if (matches.isEmpty()) _currentMatchIndex.value = -1
             }
         }
     }
 
-    private fun processTextExtractionQueue() {
-        viewModelScope.launch(Dispatchers.Default) {
-            while (true) {
-                // 1. Lấy task ưu tiên nhất (LIFO - Last In First Out)
-                // Trang nào mới được thêm vào cuối cùng sẽ được lấy ra xử lý trước
-                val nextTask = queueMutex.withLock {
-                    extractionQueue.removeLastOrNull()
-                }
-
-                // 2. Nếu có task thì xử lý
-                if (nextTask != null) {
-                    val (index, bitmap) = nextTask
-                    // Kiểm tra lại lần nữa xem đã có kết quả chưa (tránh làm thừa)
-                    if (!_pageWords.value.containsKey(index)) {
-                        performTextRecognition(index, bitmap)
-                    }
-                } else {
-                    // 3. Queue rỗng, tạm dừng coroutine chờ tín hiệu có task mới
-                    processingTrigger.receive()
-                }
-            }
-        }
-    }
-
+    // --- SEARCH HELPERS ---
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query
-
-        // Hủy job quét cũ nếu có
         fullScanJob?.cancel()
-
         if (query.isNotBlank()) {
-            // Bắt đầu quét toàn bộ các trang chưa load
-            fullScanJob = viewModelScope.launch(Dispatchers.Default) {
-                scanEntireDocument()
-            }
+            fullScanJob = viewModelScope.launch(Dispatchers.Default) { scanEntireDocument() }
         }
     }
 
@@ -250,54 +293,48 @@ class PdfViewModel @Inject constructor(
         _currentMatchIndex.update { if (it - 1 < 0) count - 1 else it - 1 }
     }
 
-    // --- FULL DOCUMENT SCANNING ---
+    // --- DOCUMENT LOADING ---
     private suspend fun scanEntireDocument() {
         val renderer = pdfRenderer ?: return
         val pageCount = renderer.pageCount
-
-        // Duyệt qua tất cả các trang
         for (i in 0 until pageCount) {
-            // Kiểm tra xem job còn hoạt động không (để dừng khi người dùng xóa search)
             if (!currentCoroutineContext().isActive) break
-
-            // Nếu trang này chưa được quét, thì tiến hành quét
             if (!_pageWords.value.containsKey(i)) {
                 try {
-                    // 1. Render Bitmap tạm thời (Low/Medium quality cho nhanh)
-                    // Sử dụng pdfMutex để tránh conflict với luồng hiển thị UI
                     val bitmap = pdfMutex.withLock {
                         if (pdfRenderer == null) return@withLock null
-
                         try {
                             pdfRenderer?.openPage(i)?.use { page ->
-                                // Scale 2.0 đủ để OCR tốt mà không tốn quá nhiều RAM
                                 val scale = 2.0f
                                 val width = (page.width * scale).toInt()
                                 val height = (page.height * scale).toInt()
-
                                 val bm = createBitmap(width, height)
                                 val canvas = Canvas(bm)
                                 canvas.drawColor(Color.WHITE)
                                 page.render(bm, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                                 bm
                             }
-                        } catch (e: Exception) {
-                            null
-                        }
+                        } catch (e: Exception) { null }
                     }
-
-                    // 2. Chạy ML Kit OCR và cập nhật _pageWords
                     if (bitmap != null) {
                         performTextRecognition(i, bitmap)
-                        // Quan trọng: Giải phóng Bitmap ngay lập tức để tránh OOM
                         bitmap.recycle()
                     }
-
-                    // Nhường CPU một chút để không block UI quá lâu
                     yield()
+                } catch (e: Exception) { e.printStackTrace() }
+            }
+        }
+    }
 
-                } catch (e: Exception) {
-                    e.printStackTrace()
+    private fun processTextExtractionQueue() {
+        viewModelScope.launch(Dispatchers.Default) {
+            while (true) {
+                val nextTask = queueMutex.withLock { extractionQueue.pollLast() }
+                if (nextTask != null) {
+                    val (index, bitmap) = nextTask
+                    if (!_pageWords.value.containsKey(index)) performTextRecognition(index, bitmap)
+                } else {
+                    processingTrigger.receive()
                 }
             }
         }
@@ -311,6 +348,15 @@ class PdfViewModel @Inject constructor(
                 if (document != null) {
                     _uiState.update { it.copy(document = document) }
                     openPdfFromPath(document.uri)
+
+                    // Observe Ink Strokes from DB
+                    loadStrokesJob?.cancel()
+                    loadStrokesJob = viewModelScope.launch {
+                        noteRepository.getAllStrokesForDocument(documentId.toString())
+                            .collect { strokes ->
+                                _inkStrokesFromDb.value = strokes
+                            }
+                    }
                 } else {
                     _uiState.update { it.copy(errorMessage = "Không tìm thấy tài liệu") }
                 }
@@ -322,58 +368,37 @@ class PdfViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Render một trang PDF thành Bitmap.
-     * Hàm này chạy trên IO thread và cache kết quả.
-     */
     suspend fun loadPage(context: Context, index: Int): Bitmap? {
-        // 1. Kiểm tra Cache trước
         bitmapCache[index]?.let { return it }
-
         return withContext(Dispatchers.IO) {
             val renderer = pdfRenderer ?: return@withContext null
-            // Kiểm tra index hợp lệ
             if (index < 0 || index >= renderer.pageCount) return@withContext null
-
             try {
                 pdfMutex.withLock {
                     renderer.openPage(index).use { page ->
-                        // Tính toán độ phân giải dựa trên mật độ điểm ảnh màn hình
                         val density = context.resources.displayMetrics.density
-                        // Hệ số nhân 2.0f giúp ảnh nét hơn khi zoom, nhưng tốn bộ nhớ hơn
                         val scaleFactor = density * 2.0f
-
                         val targetWidth = (page.width * scaleFactor).toInt()
                         val targetHeight = (page.height * scaleFactor).toInt()
-
                         val bitmap = createBitmap(targetWidth, targetHeight)
                         val canvas = Canvas(bitmap)
                         canvas.drawColor(Color.WHITE)
-
                         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-
                         bitmapCache.put(index, bitmap)
                         bitmap
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
+            } catch (e: Exception) { e.printStackTrace(); null }
         }
     }
 
     fun extractTextFromPage(index: Int, bitmap: Bitmap) {
         if (_pageWords.value.containsKey(index)) return
-
         viewModelScope.launch {
             queueMutex.withLock {
                 val iterator = extractionQueue.iterator()
                 while (iterator.hasNext()) {
-                    if (iterator.next().first == index) {
-                        iterator.remove()
-                        break
-                    }
+                    if (iterator.next().first == index) { iterator.remove(); break }
                 }
                 extractionQueue.addLast(index to bitmap)
             }
@@ -381,19 +406,15 @@ class PdfViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Logic thực sự của ML Kit, được gọi tuần tự bên trong Consumer Loop
-     */
     private suspend fun performTextRecognition(index: Int, bitmap: Bitmap) = suspendCancellableCoroutine { continuation ->
         try {
             val image = InputImage.fromBitmap(bitmap, 0)
             val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-
+            val bitmapWidth = bitmap.width.toFloat()
+            val bitmapHeight = bitmap.height.toFloat()
             recognizer.process(image)
                 .addOnSuccessListener { visionText ->
                     val wordsList = mutableListOf<WordInfo>()
-                    val bitmapWidth = bitmap.width.toFloat()
-                    val bitmapHeight = bitmap.height.toFloat()
                     for (block in visionText.textBlocks) {
                         for (line in block.lines) {
                             for (element in line.elements) {
@@ -412,14 +433,8 @@ class PdfViewModel @Inject constructor(
                     _pageWords.update { it + (index to wordsList) }
                     continuation.resume(Unit)
                 }
-                .addOnFailureListener { e ->
-                    e.printStackTrace()
-                    continuation.resume(Unit) // Vẫn resume để không treo coroutine
-                }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            continuation.resume(Unit)
-        }
+                .addOnFailureListener { e -> e.printStackTrace(); continuation.resume(Unit) }
+        } catch (e: Exception) { e.printStackTrace(); continuation.resume(Unit) }
     }
 
     private fun openPdfFromPath(path: String) {
@@ -427,11 +442,8 @@ class PdfViewModel @Inject constructor(
             closeResources()
             val file = File(path)
             if (!file.exists()) throw Exception("File không tồn tại tại đường dẫn: $path")
-
             fileDescriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-            fileDescriptor?.let {
-                pdfRenderer = PdfRenderer(it)
-            }
+            fileDescriptor?.let { pdfRenderer = PdfRenderer(it) }
         } catch (e: Exception) {
             _uiState.update { it.copy(errorMessage = "Không thể mở file PDF: ${e.message}") }
         }
@@ -441,9 +453,7 @@ class PdfViewModel @Inject constructor(
         try {
             pdfRenderer?.close()
             fileDescriptor?.close()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) { e.printStackTrace() }
         pdfRenderer = null
         fileDescriptor = null
         bitmapCache.evictAll()

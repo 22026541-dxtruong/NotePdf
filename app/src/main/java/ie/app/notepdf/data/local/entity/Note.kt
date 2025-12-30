@@ -9,23 +9,29 @@ import java.util.Date
 import java.util.Locale
 
 @Entity(
-    tableName = "folders",
+    tableName = "notes",
     foreignKeys = [
         ForeignKey(
-            entity = Folder::class,
+            entity = Document::class,
             parentColumns = ["id"],
-            childColumns = ["parent_id"],
+            childColumns = ["document_id"],
             onDelete = ForeignKey.CASCADE,
             onUpdate = ForeignKey.CASCADE
         )
     ]
 )
-data class Folder(
+data class Note(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val name: String,
-    @ColumnInfo(name = "parent_id", index = true)
-    val parentId: Long = 0,
+    @ColumnInfo(name = "document_id", index = true)
+    val documentId: Long,
+    @ColumnInfo(name = "page_index")
+    val pageIndex: Int,
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float,
+    val text: String,
     @ColumnInfo(name = "created_at", defaultValue = "CURRENT_TIMESTAMP")
     val createdAt: String = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).format(Date())
 )

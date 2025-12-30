@@ -36,4 +36,8 @@ object DatabaseModule {
     @Singleton
     fun provideInkStrokeDao(database: NotePdfDatabase) = database.inkStrokeDao()
 
+    @Provides
+    @Singleton
+    fun provideNoteDao(database: NotePdfDatabase) = database.noteDao()
+
 }

@@ -78,6 +78,7 @@ dependencies {
     //ML Kit
     implementation(libs.digital.ink.recognition)
     implementation(libs.text.recognition)
+    implementation(libs.play.services.mlkit.document.scanner)
     //Coil
     implementation(libs.coil.compose)
     implementation(libs.androidx.core.splashscreen)

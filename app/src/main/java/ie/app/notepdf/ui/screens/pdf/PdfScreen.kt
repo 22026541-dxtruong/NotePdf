@@ -1,7 +1,5 @@
 package ie.app.notepdf.ui.screens.pdf
 
-import ToggleFloatingActionButton
-import ToggleFloatingActionButtonDefaults.animateIcon
 import android.graphics.Bitmap
 import android.graphics.RectF
 import androidx.compose.animation.AnimatedContent
@@ -23,39 +21,52 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,12 +75,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
@@ -83,6 +98,7 @@ import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
@@ -96,7 +112,12 @@ import ie.app.notepdf.R
 import ie.app.notepdf.data.local.entity.InkStroke
 import ie.app.notepdf.data.local.entity.InkTypeConverters
 import ie.app.notepdf.data.local.entity.NormalizedPoint
+import ie.app.notepdf.data.local.entity.Note
 import ie.app.notepdf.data.local.entity.ToolType
+import ie.app.notepdf.ui.component.ToggleFloatingActionButton
+import ie.app.notepdf.ui.component.ToggleFloatingActionButtonDefaults
+import ie.app.notepdf.ui.component.ToggleFloatingActionButtonDefaults.animateIcon
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -121,12 +142,15 @@ fun PdfScreen(
     onBack: () -> Unit,
     viewModel: PdfViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+
     val uiState by viewModel.uiState.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val currentMatchIndex by viewModel.currentMatchIndex.collectAsState()
     val currentTool by viewModel.currentTool.collectAsState()
     val inkStrokes by viewModel.inkStrokes.collectAsState()
+    val notes by viewModel.notes.collectAsState()
 
     // --- State cho Zoom & Pan ---
     var scale by remember { mutableFloatStateOf(1f) }
@@ -147,6 +171,15 @@ fun PdfScreen(
     var layoutSize by remember { mutableStateOf(IntSize.Zero) }
 
     var boxLayoutCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+
+    // --- States cho Dialog Ghi chú ---
+    var showNoteDialog by remember { mutableStateOf(false) }
+    var showNoteListSheet by remember { mutableStateOf(false) }
+    var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var capturedRect by remember { mutableStateOf<RectF?>(null) }
+    var capturedPageIndex by remember { mutableIntStateOf(-1) }
+
+    var selectedNote by remember { mutableStateOf<Note?>(null) }
 
     // State cho LazyColumn
     val listState = rememberLazyListState()
@@ -214,6 +247,45 @@ fun PdfScreen(
         }
     }
 
+    if (showNoteDialog && capturedBitmap != null && capturedRect != null) {
+        NoteDialog(
+            bitmap = capturedBitmap!!,
+            onDismiss = {
+                showNoteDialog = false
+                capturedBitmap = null // Clear bitmap
+            },
+            onSave = { text ->
+                viewModel.addNote(capturedPageIndex, capturedRect!!, text)
+                showNoteDialog = false
+                capturedBitmap = null
+                // Chuyển về tool NONE sau khi lưu để người dùng có thể scroll tiếp
+                viewModel.setTool(ToolType.NONE)
+            }
+        )
+    }
+
+    if (showNoteListSheet) {
+        NoteListBottomSheet(
+            notes = notes,
+            currentPage = listState.firstVisibleItemIndex,
+            onDismiss = { showNoteListSheet = false },
+            onNoteSelected = { note ->
+                scope.launch {
+                    showNoteListSheet = false
+                    selectedNote = note
+                    listState.animateScrollToItem(note.pageIndex)
+                }
+            },
+            onDeleteNote = { note -> viewModel.deleteNote(note) },
+            onUpdateNote = { note ->
+                viewModel.updateNote(note)
+            },
+            loadNoteBitmap = { note ->
+                viewModel.getNoteBitmap(context, note)
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             PdfTopBar(
@@ -226,6 +298,7 @@ fun PdfScreen(
                 nextMatch = viewModel::nextMatch,
                 prevMatch = viewModel::prevMatch,
                 currentMatchIndex = currentMatchIndex,
+                onShowNoteList = { showNoteListSheet = true }
             )
         },
         floatingActionButton = {
@@ -298,7 +371,7 @@ fun PdfScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(16.dp)
                 ) {
-                    items(document.pageCount) { index ->
+                    items(document.pageCount, key = { it }) { index ->
                         val pageSelection = if (globalSelection.pageIndex == index) {
                             globalSelection.selection
                         } else {
@@ -318,7 +391,10 @@ fun PdfScreen(
                             pageMatches = pageMatches,
                             focusedMatch = focusedMatch,
                             currentTool = currentTool,
+                            selectedNote = selectedNote,
+                            onSelectedNote = { selectedNote = null },
                             pageStrokes = inkStrokes[index] ?: emptyList(),
+                            pageNotes = notes[index] ?: emptyList(),
                             onSelectionChanged = { newSelection ->
                                 globalSelection = GlobalSelectionState(index, newSelection)
                             },
@@ -335,7 +411,6 @@ fun PdfScreen(
                             onDoubleTap = { windowTapPos ->
                                 if (currentTool == ToolType.NONE) {
                                     boxLayoutCoordinates?.let { boxCoords ->
-                                        // Chuyển đổi tọa độ màn hình (Window) sang tọa độ của Box chứa LazyColumn
                                         val tapInBox = boxCoords.windowToLocal(windowTapPos)
 
                                         val targetScale = if (scale >= 5f) 1f else scale + 1f
@@ -359,6 +434,21 @@ fun PdfScreen(
                             },
                             onStrokeRemoved = { stroke ->
                                 viewModel.removeStroke(stroke)
+                            },
+                            onAreaSelected = { rect ->
+                                if (rect.width() > 0 && rect.height() > 0) {
+                                    // Cắt ảnh bất đồng bộ và hiện dialog
+                                    scope.launch {
+                                        val bitmap =
+                                            viewModel.captureSelectionBitmap(context, index, rect)
+                                        if (bitmap != null) {
+                                            capturedBitmap = bitmap
+                                            capturedRect = rect
+                                            capturedPageIndex = index
+                                            showNoteDialog = true
+                                        }
+                                    }
+                                }
                             }
                         )
                     }
@@ -386,7 +476,8 @@ fun PdfTopBar(
     nextMatch: () -> Unit = {},
     prevMatch: () -> Unit = {},
     searchResults: List<SearchMatch> = emptyList(),
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {},
+    onShowNoteList: () -> Unit = {}
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -468,9 +559,7 @@ fun PdfTopBar(
                     )
                 }
             } else {
-                IconButton(onClick = {
-
-                }) {
+                IconButton(onClick = onShowNoteList) {
                     Icon(
                         painter = painterResource(R.drawable.outline_comment_24),
                         contentDescription = "Comment"
@@ -501,7 +590,9 @@ fun PdfFabMenu(
 
     val isActive by remember {
         derivedStateOf {
-            (listState.canScrollForward && !listState.isScrollInProgress) || isMenuExpand
+            ((listState.canScrollForward && !listState.isScrollInProgress)
+                    || isMenuExpand)
+                    && currentTool != ToolType.BOX_SELECT
         }
     }
 
@@ -511,116 +602,135 @@ fun PdfFabMenu(
         label = "FloatActionButtonAlpha"
     )
 
-    ToggleFloatingActionButton(
+    Column(
         modifier = Modifier.alpha(alpha),
-        checked = isMenuExpand,
-        onCheckedChange = { isMenuExpand = !isMenuExpand },
-        targetWidth = if (isMenuExpand) 320.dp else 56.dp,
-        contentClickable = !isMenuExpand,
-        containerColor = ToggleFloatingActionButtonDefaults.containerColor(
-            initialColor = MaterialTheme.colorScheme.primaryContainer,
-            finalColor = MaterialTheme.colorScheme.primaryContainer
-        ),
-        contentAlignment = Alignment.CenterEnd
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalAlignment = Alignment.End
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.padding(end = 4.dp)
+        FloatingActionButton(
+            onClick = {
+                onToolSelected(if (currentTool == ToolType.BOX_SELECT) ToolType.NONE else ToolType.BOX_SELECT)
+            },
+            containerColor = if (currentTool == ToolType.BOX_SELECT) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.primaryContainer
         ) {
-            AnimatedVisibility(
-                visible = isMenuExpand,
-                enter = fadeIn() + expandHorizontally(),
-                exit = fadeOut() + shrinkHorizontally(),
-                modifier = Modifier.weight(1f)
+            Icon(
+                painter = painterResource(if (currentTool == ToolType.BOX_SELECT) R.drawable.baseline_clear_24 else R.drawable.outline_add_comment_24),
+                contentDescription = "Add Comment"
+            )
+        }
+        ToggleFloatingActionButton(
+            checked = isMenuExpand,
+            onCheckedChange = { isMenuExpand = !isMenuExpand },
+            targetWidth = if (isMenuExpand) 328.dp else 56.dp,
+            contentClickable = !isMenuExpand,
+            containerColor = ToggleFloatingActionButtonDefaults.containerColor(
+                initialColor = MaterialTheme.colorScheme.primaryContainer,
+                finalColor = MaterialTheme.colorScheme.primaryContainer
+            ),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.padding(end = 4.dp)
             ) {
-                Row(
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(4.dp)
+                AnimatedVisibility(
+                    visible = isMenuExpand,
+                    enter = fadeIn() + expandHorizontally(),
+                    exit = fadeOut() + shrinkHorizontally(),
+                    modifier = Modifier.weight(1f)
                 ) {
-                    IconButton(
-                        onClick = { onToolSelected(ToolType.PEN) },
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
-                            .background(
-                                if (currentTool == ToolType.PEN) Color.White else Color.Transparent,
-                                CircleShape
-                            )
+                            .fillMaxWidth()
+                            .padding(start = 4.dp)
                     ) {
-                        Icon(
-                            painter = painterResource(R.drawable.outline_stylus_note_24),
-                            contentDescription = "Draw"
-                        )
-                    }
-                    IconButton(
-                        onClick = { onToolSelected(ToolType.HIGHLIGHTER) },
-                        modifier = Modifier
-                            .background(
-                                if (currentTool == ToolType.HIGHLIGHTER) Color.White else Color.Transparent,
-                                CircleShape
+                        IconButton(
+                            onClick = { onToolSelected(ToolType.PEN) },
+                            modifier = Modifier
+                                .background(
+                                    if (currentTool == ToolType.PEN) Color.White else Color.Transparent,
+                                    CircleShape
+                                )
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.outline_stylus_note_24),
+                                contentDescription = "Draw"
                             )
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.outline_brush_24),
-                            contentDescription = "Mark"
-                        )
-                    }
-                    IconButton(
-                        onClick = { onToolSelected(ToolType.ERASER) },
-                        modifier = Modifier
-                            .background(
-                                if (currentTool == ToolType.ERASER) Color.White else Color.Transparent,
-                                CircleShape
+                        }
+                        IconButton(
+                            onClick = { onToolSelected(ToolType.HIGHLIGHTER) },
+                            modifier = Modifier
+                                .background(
+                                    if (currentTool == ToolType.HIGHLIGHTER) Color.White else Color.Transparent,
+                                    CircleShape
+                                )
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.outline_brush_24),
+                                contentDescription = "Mark"
                             )
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.outline_ink_eraser_24),
-                            contentDescription = "Eraser"
-                        )
-                    }
-                    IconButton(onClick = onUndo) {
-                        Icon(
-                            painter = painterResource(R.drawable.outline_undo_24),
-                            contentDescription = "Undo"
-                        )
-                    }
-                    IconButton(onClick = onRedo) {
-                        Icon(
-                            painter = painterResource(R.drawable.outline_redo_24),
-                            contentDescription = "Redo"
-                        )
+                        }
+                        IconButton(
+                            onClick = { onToolSelected(ToolType.ERASER) },
+                            modifier = Modifier
+                                .background(
+                                    if (currentTool == ToolType.ERASER) Color.White else Color.Transparent,
+                                    CircleShape
+                                )
+                        ) {
+                            Icon(
+                                painter = painterResource(R.drawable.outline_ink_eraser_24),
+                                contentDescription = "Eraser"
+                            )
+                        }
+                        IconButton(onClick = onUndo) {
+                            Icon(
+                                painter = painterResource(R.drawable.outline_undo_24),
+                                contentDescription = "Undo"
+                            )
+                        }
+                        IconButton(onClick = onRedo) {
+                            Icon(
+                                painter = painterResource(R.drawable.outline_redo_24),
+                                contentDescription = "Redo"
+                            )
+                        }
                     }
                 }
-            }
-            val imageVector by remember(checkedProgress) {
-                derivedStateOf {
-                    if (checkedProgress > 0.5f) R.drawable.outline_visibility_24
-                    else R.drawable.outline_draw_24
+                val imageVector by remember(checkedProgress) {
+                    derivedStateOf {
+                        if (checkedProgress > 0.5f) R.drawable.outline_visibility_24
+                        else R.drawable.outline_draw_24
+                    }
                 }
-            }
-            IconButton(
-                onClick = {
-                    isMenuExpand = !isMenuExpand
-                    onToolSelected(ToolType.NONE)
-                },
-                modifier = Modifier
-                    .size(48.dp)
-                    .background(if (isMenuExpand) Color.White else Color.Transparent, CircleShape)
-            ) {
-                Icon(
-                    painter = painterResource(imageVector),
-                    contentDescription = "Toggle Menu",
+                IconButton(
+                    onClick = {
+                        isMenuExpand = !isMenuExpand
+                        onToolSelected(ToolType.NONE)
+                    },
                     modifier = Modifier
-                        .animateIcon(
-                            { checkedProgress },
-                            color = ToggleFloatingActionButtonDefaults.iconColor(
-                                initialColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                finalColor = Color.Black // Màu icon khi nền trắng
-                            )
+                        .size(48.dp)
+                        .background(
+                            if (isMenuExpand) Color.White else Color.Transparent,
+                            CircleShape
                         )
-                )
+                ) {
+                    Icon(
+                        painter = painterResource(imageVector),
+                        contentDescription = "Toggle Menu",
+                        modifier = Modifier
+                            .animateIcon(
+                                { checkedProgress },
+                                color = ToggleFloatingActionButtonDefaults.iconColor(
+                                    initialColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    finalColor = Color.Black // Màu icon khi nền trắng
+                                )
+                            )
+                    )
+                }
             }
         }
     }
@@ -676,9 +786,9 @@ fun PdfFastScroller(
         val thumbOffsetPx by remember(
             trackHeightPx,
             thumbHeightPx,
-            listState.firstVisibleItemIndex,
             isDragging,
-            dragOffset
+            dragOffset,
+            listState
         ) {
             derivedStateOf {
                 if (isDragging) {
@@ -693,7 +803,6 @@ fun PdfFastScroller(
                 }
             }
         }
-
         // Tay nắm (Thumb) & Bong bóng số trang - Phần Visual (Hiển thị)
         Box(
             modifier = Modifier
@@ -785,14 +894,18 @@ fun PdfPageItem(
     pageMatches: List<SearchMatch>,
     focusedMatch: SearchMatch?,
     currentTool: ToolType,
+    selectedNote: Note?,
+    onSelectedNote: () -> Unit = {},
     pageStrokes: List<InkStroke>,
+    pageNotes: List<Note>,
     onSelectionChanged: (SelectionState) -> Unit,
     onSelectionDragStateChange: (Boolean) -> Unit,
     onDragScreenPosition: (Offset) -> Unit,
     onHandleTouch: (Boolean) -> Unit,
     onDoubleTap: (Offset) -> Unit,
     onStrokeAdded: (List<NormalizedPoint>, Color, Float, ToolType) -> Unit,
-    onStrokeRemoved: (InkStroke) -> Unit
+    onStrokeRemoved: (InkStroke) -> Unit,
+    onAreaSelected: (RectF) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -804,6 +917,7 @@ fun PdfPageItem(
     var originalImageSize by remember { mutableStateOf<IntSize?>(null) }
 
     var currentDrawingPoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    var currentBoxSelection by remember { mutableStateOf<Rect?>(null) }
 
     // --- TÍNH TOÁN KÍCH THƯỚC CHUẨN KHI SCALE ---
     val baseHandleRadiusDp = 10.dp
@@ -856,55 +970,110 @@ fun PdfPageItem(
                     awaitEachGesture {
                         val down = awaitFirstDown()
                         down.consume() // CHẶN MỌI SỰ KIỆN KHÁC
-                        if (currentTool == ToolType.ERASER) {
-                            var dragging = true
-                            while (dragging) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.find { it.id == down.id }
-                                if (change == null || !change.pressed) dragging = false
-                                else {
-                                    change.consume()
-                                    val pos = change.position
-                                    // Eraser logic
-                                    val hitStroke = pageStrokes.find { stroke ->
-                                        val points =
-                                            InkTypeConverters().toPointsList(stroke.pointsJson)
-                                        points.any { p ->
-                                            val px = p.x * viewSize.width
-                                            val py = p.y * viewSize.height
-                                            hypot(px - pos.x, py - pos.y) < 50f // Hit threshold
+
+                        val width = viewSize.width.toFloat()
+                        val height = viewSize.height.toFloat()
+                        fun Offset.clamp(): Offset {
+                            return Offset(
+                                x.coerceIn(0f, width),
+                                y.coerceIn(0f, height)
+                            )
+                        }
+
+                        val startPos = down.position.clamp()
+
+                        when (currentTool) {
+                            ToolType.BOX_SELECT -> {
+                                var currentPoint = startPos
+                                currentBoxSelection = Rect(startPos, startPos)
+
+                                var dragging = true
+                                while (dragging) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.find { it.id == down.id }
+                                    if (change == null || !change.pressed) dragging = false
+                                    else {
+                                        change.consume()
+                                        currentPoint = change.position.clamp()
+                                        currentBoxSelection = Rect(
+                                            left = minOf(startPos.x, currentPoint.x),
+                                            top = minOf(startPos.y, currentPoint.y),
+                                            right = maxOf(startPos.x, currentPoint.x),
+                                            bottom = maxOf(startPos.y, currentPoint.y)
+                                        )
+                                    }
+                                }
+                                // Kết thúc kéo: Chuẩn hóa Rect và gọi callback lưu Note
+                                currentBoxSelection?.let { finalRect ->
+                                    if (viewSize.width > 0 && viewSize.height > 0) {
+                                        val normalizedRect = RectF(
+                                            finalRect.left / viewSize.width,
+                                            finalRect.top / viewSize.height,
+                                            finalRect.right / viewSize.width,
+                                            finalRect.bottom / viewSize.height
+                                        )
+                                        onAreaSelected(normalizedRect)
+                                    }
+                                }
+                                currentBoxSelection = null
+                            }
+
+                            ToolType.ERASER -> {
+                                var dragging = true
+                                while (dragging) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.find { it.id == down.id }
+                                    if (change == null || !change.pressed) dragging = false
+                                    else {
+                                        change.consume()
+                                        val pos = change.position
+                                        // Eraser logic
+                                        val hitStroke = pageStrokes.find { stroke ->
+                                            val points =
+                                                InkTypeConverters().toPointsList(stroke.pointsJson)
+                                            points.any { p ->
+                                                val px = p.x * viewSize.width
+                                                val py = p.y * viewSize.height
+                                                hypot(px - pos.x, py - pos.y) < 50f // Hit threshold
+                                            }
+                                        }
+                                        if (hitStroke != null) onStrokeRemoved(hitStroke)
+                                    }
+                                }
+                            }
+
+                            else -> {
+                                // Pen/Highlighter Logic
+                                currentDrawingPoints = listOf(startPos)
+                                var dragging = true
+                                while (dragging) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.find { it.id == down.id }
+                                    if (change == null || !change.pressed) dragging = false
+                                    else {
+                                        change.consume()
+                                        val newPos = change.position.clamp()
+                                        // Tránh thêm điểm trùng lặp nếu người dùng giữ tay ở mép
+                                        if (currentDrawingPoints.isEmpty() || newPos != currentDrawingPoints.last()) {
+                                            currentDrawingPoints = currentDrawingPoints + newPos
                                         }
                                     }
-                                    if (hitStroke != null) onStrokeRemoved(hitStroke)
                                 }
-                            }
-                        } else {
-                            // Pen/Highlighter Logic
-                            currentDrawingPoints = listOf(down.position)
-                            var dragging = true
-                            while (dragging) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.find { it.id == down.id }
-                                if (change == null || !change.pressed) dragging = false
-                                else {
-                                    change.consume()
-                                    currentDrawingPoints = currentDrawingPoints + change.position
+                                if (currentDrawingPoints.size > 1) {
+                                    val normalizedPoints = currentDrawingPoints.map {
+                                        NormalizedPoint(
+                                            it.x / viewSize.width.toFloat(),
+                                            it.y / viewSize.height.toFloat()
+                                        )
+                                    }
+                                    val color =
+                                        if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow else Color.Red
+                                    val width =
+                                        if (currentTool == ToolType.HIGHLIGHTER) 0.03f else 0.005f
+                                    onStrokeAdded(normalizedPoints, color, width, currentTool)
                                 }
+                                currentDrawingPoints = emptyList()
                             }
-                            if (currentDrawingPoints.size > 1) {
-                                val normalizedPoints = currentDrawingPoints.map {
-                                    NormalizedPoint(
-                                        it.x / viewSize.width.toFloat(),
-                                        it.y / viewSize.height.toFloat()
-                                    )
-                                }
-                                val color =
-                                    if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow else Color.Red
-                                val width =
-                                    if (currentTool == ToolType.HIGHLIGHTER) 0.03f else 0.005f
-                                onStrokeAdded(normalizedPoints, color, width, currentTool)
-                            }
-                            currentDrawingPoints = emptyList()
                         }
                     }
                 }
@@ -917,7 +1086,10 @@ fun PdfPageItem(
                                 onDoubleTap(windowPos)
                             }
                         },
-                        onTap = { onSelectionChanged(SelectionState()) },
+                        onTap = {
+                            onSelectedNote()
+                            onSelectionChanged(SelectionState())
+                        },
                         onLongPress = { localOffset ->
                             val wordIndex = findWordIndexAt(localOffset, wordsOfThisPage, viewSize)
                             if (wordIndex != -1) {
@@ -982,14 +1154,16 @@ fun PdfPageItem(
 
                     // 2. CACHE SELECTION RECTS
                     val viewSizeInt = IntSize(size.width.toInt(), size.height.toInt())
-                    val selectedRects = selectionState.selectedWords.map { it.rect.toScreenRect(viewSizeInt) }
+                    val selectedRects =
+                        selectionState.selectedWords.map { it.rect.toScreenRect(viewSizeInt) }
                     val mergedSelectionRects = mergeRectangles(selectedRects)
 
                     // 3. CACHE SEARCH HIGHLIGHTS
                     val cachedSearchMatches = pageMatches.map { match ->
                         val isFocused = (focusedMatch != null && focusedMatch == match)
                         val color = if (isFocused) Color(0x99FF8800) else Color(0x66FFFF00)
-                        val rects = mergeRectangles(match.rects.map { it.toScreenRect(viewSizeInt) })
+                        val rects =
+                            mergeRectangles(match.rects.map { it.toScreenRect(viewSizeInt) })
                         Triple(rects, color, isFocused)
                     }
 
@@ -999,8 +1173,10 @@ fun PdfPageItem(
                         val handleColor = Color(0xFF4285F4)
                         val lineStroke = 2.dp.toPx() / currentScale
 
-                        val firstRect = selectionState.selectedWords.first().rect.toScreenRect(viewSizeInt)
-                        val lastRect = selectionState.selectedWords.last().rect.toScreenRect(viewSizeInt)
+                        val firstRect =
+                            selectionState.selectedWords.first().rect.toScreenRect(viewSizeInt)
+                        val lastRect =
+                            selectionState.selectedWords.last().rect.toScreenRect(viewSizeInt)
 
                         Triple(firstRect, lastRect, object {
                             val color = handleColor
@@ -1012,160 +1188,159 @@ fun PdfPageItem(
                     onDrawWithContent {
                         drawContent() // Vẽ ảnh nền
 
+                        pageNotes.forEach { note ->
+                            val noteRect =
+                                RectF(note.x, note.y, note.x + note.width, note.y + note.height)
+                            val screenRect = noteRect.toScreenRect(
+                                IntSize(
+                                    size.width.toInt(),
+                                    size.height.toInt()
+                                )
+                            )
+                            drawRect(
+                                color = if (note.id == selectedNote?.id) Color.Blue.copy(alpha = 0.4f) else Color.Gray.copy(alpha = 0.5f),
+                                topLeft = screenRect.topLeft,
+                                size = screenRect.size,
+                                style = Stroke(width = 1.dp.toPx() / currentScale)
+                            )
+                        }
                         // Vẽ nét mực cũ (từ cache)
                         strokePaths.forEach { (stroke, path) ->
                             val color = Color(stroke.color).copy(alpha = stroke.alpha)
-                            drawPath(path = path, color = color, style = Stroke(width = stroke.strokeWidth * size.width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                            drawPath(
+                                path = path,
+                                color = color,
+                                style = Stroke(
+                                    width = stroke.strokeWidth * size.width,
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round
+                                )
+                            )
                         }
 
                         // Vẽ nét đang vẽ (không cache)
                         if (currentDrawingPoints.isNotEmpty()) {
                             val path = Path()
-                            path.moveTo(currentDrawingPoints.first().x, currentDrawingPoints.first().y)
+                            path.moveTo(
+                                currentDrawingPoints.first().x,
+                                currentDrawingPoints.first().y
+                            )
                             for (i in 1 until currentDrawingPoints.size) {
                                 path.lineTo(currentDrawingPoints[i].x, currentDrawingPoints[i].y)
                             }
-                            val color = if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow.copy(alpha = 0.4f) else Color.Red
-                            val width = if (currentTool == ToolType.HIGHLIGHTER) 0.03f * size.width else 0.005f * size.width
-                            drawPath(path = path, color = color, style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                            val color =
+                                if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow.copy(alpha = 0.4f) else Color.Red
+                            val width =
+                                if (currentTool == ToolType.HIGHLIGHTER) 0.03f * size.width else 0.005f * size.width
+                            drawPath(
+                                path = path,
+                                color = color,
+                                style = Stroke(
+                                    width = width,
+                                    cap = StrokeCap.Round,
+                                    join = StrokeJoin.Round
+                                )
+                            )
                         }
 
+                        if (currentTool == ToolType.BOX_SELECT) {
+                            val dimColor = Color.Black.copy(alpha = 0.4f)
+
+                            // 1. Nền tối toàn màn hình
+                            val outerPath = Path().apply {
+                                addRect(Rect(0f, 0f, size.width, size.height))
+                            }
+
+                            // 2. Các vùng cần làm sáng (Lỗ thủng)
+                            val holesPath = Path()
+
+                            // Vùng đang kéo
+                            currentBoxSelection?.let { selection ->
+                                holesPath.addRect(selection)
+                            }
+
+                            // Các ghi chú đã lưu
+                            pageNotes.forEach { note ->
+                                val noteRect =
+                                    RectF(note.x, note.y, note.x + note.width, note.y + note.height)
+                                holesPath.addRect(noteRect.toScreenRect(viewSizeInt))
+                            }
+
+                            // 3. Trừ vùng lỗ khỏi nền tối (Sử dụng Path Operation Difference thay vì EvenOdd)
+                            // Điều này đảm bảo các lỗ hổng chồng nhau vẫn là lỗ hổng (Hole OR Hole = Hole)
+                            // thay vì bị lấp đầy lại (Hole XOR Hole = Fill) như EvenOdd.
+                            outerPath.op(outerPath, holesPath, PathOperation.Difference)
+
+                            drawPath(path = outerPath, color = dimColor)
+
+                            currentBoxSelection?.let { rect ->
+                                drawRect(
+                                    color = Color(0xFF4285F4),
+                                    topLeft = rect.topLeft,
+                                    size = rect.size,
+                                    style = Stroke(
+                                        width = 2.dp.toPx() / currentScale,
+                                        pathEffect = PathEffect.dashPathEffect(
+                                            floatArrayOf(
+                                                20f,
+                                                20f
+                                            ), 0f
+                                        )
+                                    )
+                                )
+                            }
+                        }
                         // Vẽ Selection & Search & Handles (chỉ khi không dùng tool vẽ)
                         if (currentTool == ToolType.NONE) {
                             // Highlight
-                            mergedSelectionRects.forEach { rect -> drawRect(color = Color(0x664285F4), topLeft = rect.topLeft, size = rect.size) }
-
-                            // Search Highlight
-                            cachedSearchMatches.forEach { (rects, color, _) ->
-                                rects.forEach { rect -> drawRect(color = color, topLeft = rect.topLeft, size = rect.size) }
+                            mergedSelectionRects.forEach { rect ->
+                                drawRect(
+                                    color = Color(0x664285F4),
+                                    topLeft = rect.topLeft,
+                                    size = rect.size
+                                )
                             }
-
                             // Handles
                             handleData?.let { (first, last, style) ->
                                 val startHandleCenter = first.bottomLeft + Offset(0f, style.radius)
-                                drawLine(color = style.color, start = first.topLeft, end = first.bottomLeft, strokeWidth = style.stroke)
-                                drawCircle(color = style.color, radius = style.radius, center = startHandleCenter)
-
+                                drawLine(
+                                    color = style.color,
+                                    start = first.topLeft,
+                                    end = first.bottomLeft,
+                                    strokeWidth = style.stroke
+                                )
+                                drawCircle(
+                                    color = style.color,
+                                    radius = style.radius,
+                                    center = startHandleCenter
+                                )
                                 val endHandleCenter = last.bottomRight + Offset(0f, style.radius)
-                                drawLine(color = style.color, start = last.topRight, end = last.bottomRight, strokeWidth = style.stroke)
-                                drawCircle(color = style.color, radius = style.radius, center = endHandleCenter)
+                                drawLine(
+                                    color = style.color,
+                                    start = last.topRight,
+                                    end = last.bottomRight,
+                                    strokeWidth = style.stroke
+                                )
+                                drawCircle(
+                                    color = style.color,
+                                    radius = style.radius,
+                                    center = endHandleCenter
+                                )
+                            }
+                        }
+
+                        // Search Highlight
+                        cachedSearchMatches.forEach { (rects, color, _) ->
+                            rects.forEach { rect ->
+                                drawRect(
+                                    color = color,
+                                    topLeft = rect.topLeft,
+                                    size = rect.size
+                                )
                             }
                         }
                     }
                 }
-//                .drawWithContent {
-//                    drawContent() // Vẽ PDF gốc
-//                    // Vẽ các nét mực (Ink Strokes)
-//                    pageStrokes.forEach { stroke ->
-//                        val path = Path()
-//                        val points = InkTypeConverters().toPointsList(stroke.pointsJson)
-//                        if (points.isNotEmpty()) {
-//                            val start = points.first()
-//                            path.moveTo(start.x * size.width, start.y * size.height)
-//                            for (i in 1 until points.size) {
-//                                val p = points[i]
-//                                path.lineTo(p.x * size.width, p.y * size.height)
-//                            }
-//                            val color = Color(stroke.color).copy(alpha = stroke.alpha)
-//                            drawPath(
-//                                path = path,
-//                                color = color,
-//                                style = Stroke(
-//                                    width = stroke.strokeWidth * size.width,
-//                                    cap = StrokeCap.Round,
-//                                    join = StrokeJoin.Round
-//                                )
-//                            )
-//                        }
-//                    }
-//                    // Vẽ nét đang vẽ hiện tại
-//                    if (currentDrawingPoints.isNotEmpty()) {
-//                        val path = Path()
-//                        path.moveTo(currentDrawingPoints.first().x, currentDrawingPoints.first().y)
-//                        for (i in 1 until currentDrawingPoints.size) {
-//                            path.lineTo(currentDrawingPoints[i].x, currentDrawingPoints[i].y)
-//                        }
-//                        val color =
-//                            if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow.copy(alpha = 0.4f) else Color.Red
-//
-//                        val width =
-//                            if (currentTool == ToolType.HIGHLIGHTER) 0.03f * size.width else 0.005f * size.width
-//                        drawPath(
-//                            path = path,
-//                            color = color,
-//                            style = Stroke(
-//                                width = width,
-//                                cap = StrokeCap.Round,
-//                                join = StrokeJoin.Round
-//                            )
-//                        )
-//                    }
-//                    // Vẽ Selection Highlight (khi không vẽ)
-//                    if (currentTool == ToolType.NONE) {
-//                        val selectedRects =
-//                            selectionState.selectedWords.map { it.rect.toScreenRect(viewSize) }
-//                        val mergedSelectionRects = mergeRectangles(selectedRects)
-//                        mergedSelectionRects.forEach { rect ->
-//                            drawRect(
-//                                color = Color(0x664285F4),
-//                                topLeft = rect.topLeft,
-//                                size = rect.size
-//                            )
-//                        }
-//                        pageMatches.forEach { match ->
-//                            val isFocused = (focusedMatch != null && focusedMatch == match)
-//                            val matchScreenRects = match.rects.map { it.toScreenRect(viewSize) }
-//                            val mergedMatchRects = mergeRectangles(matchScreenRects)
-//                            mergedMatchRects.forEach { rect ->
-//                                drawRect(
-//                                    color = if (isFocused) Color(
-//                                        0x99FF8800
-//                                    ) else Color(0x66FFFF00),
-//                                    topLeft = rect.topLeft,
-//                                    size = rect.size
-//                                )
-//                            }
-//                        }
-//                        if (selectionState.selectedWords.isNotEmpty()) {
-//                            val handleColor = Color(0xFF4285F4)
-//                            val lineStroke = 2.dp.toPx() / currentScale
-//                            val firstRect =
-//                                selectionState.selectedWords.first().rect.toScreenRect(viewSize)
-//                            val startLineTop = firstRect.topLeft
-//                            val startLineBottom = firstRect.bottomLeft
-//                            val startHandleCenter =
-//                                startLineBottom + Offset(0f, effectiveHandleRadiusPx)
-//                            drawLine(
-//                                color = handleColor,
-//                                start = startLineTop,
-//                                end = startLineBottom,
-//                                strokeWidth = lineStroke
-//                            )
-//                            drawCircle(
-//                                color = handleColor,
-//                                radius = effectiveHandleRadiusPx,
-//                                center = startHandleCenter
-//                            )
-//                            val lastRect =
-//                                selectionState.selectedWords.last().rect.toScreenRect(viewSize)
-//                            val endLineTop = lastRect.topRight
-//                            val endLineBottom = lastRect.bottomRight
-//                            val endHandleCenter =
-//                                endLineBottom + Offset(0f, effectiveHandleRadiusPx)
-//                            drawLine(
-//                                color = handleColor,
-//                                start = endLineTop,
-//                                end = endLineBottom,
-//                                strokeWidth = lineStroke
-//                            )
-//                            drawCircle(
-//                                color = handleColor,
-//                                radius = effectiveHandleRadiusPx,
-//                                center = endHandleCenter
-//                            )
-//                        }
-//                    }
-//                }
         )
 
         // 2. Handle Touch Targets
@@ -1205,6 +1380,242 @@ fun PdfPageItem(
                 onDragScreenPosition = onDragScreenPosition,
                 onHandleTouch = onHandleTouch,
                 pageLayoutCoordinates = pageLayoutCoordinates!!
+            )
+        }
+    }
+}
+
+@Composable
+fun NoteDialog(
+    bitmap: Bitmap,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var text by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "Thêm ghi chú") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                AsyncImage(
+                    model = bitmap,
+                    contentDescription = "Selected Area",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(150.dp) // Giới hạn chiều cao
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.LightGray),
+                    contentScale = ContentScale.Fit
+                )
+
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Nội dung ghi chú") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 5
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(text) },
+                enabled = text.isNotBlank()
+            ) {
+                Text("Lưu")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Hủy")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NoteListBottomSheet(
+    notes: Map<Int, List<Note>>,
+    currentPage: Int,
+    loadNoteBitmap: suspend (Note) -> Bitmap?,
+    onNoteSelected: (Note) -> Unit,
+    onDeleteNote: (Note) -> Unit,
+    onUpdateNote: (Note) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState()
+    val noteListState = rememberLazyListState()
+
+    // Tự động cuộn đến vị trí gần trang hiện tại nhất
+    LaunchedEffect(notes, currentPage) {
+        if (notes.isNotEmpty()) {
+            var scrollIndex = 0
+            var found = false
+            // Duyệt qua danh sách ĐÃ SẮP XẾP
+            for ((pageIndex, notesOfPage) in notes) {
+                if (pageIndex >= currentPage) {
+                    found = true
+                    break
+                }
+                // Header (1 item) + số lượng note trong trang
+                scrollIndex += 1 + notesOfPage.size
+            }
+            // Nếu tìm thấy, cuộn đến scrollIndex (Header của trang đó).
+            // Nếu không (found=false), scrollIndex sẽ nằm ở cuối list -> cuộn xuống cuối (item cuối cùng).
+            if (scrollIndex >= 0) {
+                val target = if (found) scrollIndex else (scrollIndex - 1).coerceAtLeast(0)
+                noteListState.animateScrollToItem(target)
+            }
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        if (notes.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Chưa có ghi chú nào")
+            }
+        } else {
+            LazyColumn(
+                state = noteListState,
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .padding(horizontal = 16.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                notes.toSortedMap().forEach { (pageIndex, notesOfPage) ->
+                    stickyHeader(
+                        key = pageIndex,
+                        contentType = { pageIndex }
+                    ) {
+                        Text(
+                            text = "Trang ${pageIndex + 1}",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.primaryContainer,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(4.dp)
+                        )
+                    }
+                    items(notesOfPage, key = { it.id }) { note ->
+                        NoteItem(
+                            note = note,
+                            loadBitmap = { loadNoteBitmap(note) },
+                            onClick = { onNoteSelected(note) },
+                            onDelete = { onDeleteNote(note) },
+                            onEdit = { onUpdateNote(it) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(FlowPreview::class)
+@Composable
+fun NoteItem(
+    note: Note,
+    loadBitmap: suspend () -> Bitmap?,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    onEdit: (Note) -> Unit
+) {
+    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var text by remember { mutableStateOf(note.text) }
+    var isFocused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+
+    val alpha by animateFloatAsState(
+        targetValue = if (isFocused) 1f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "SaveAlpha"
+    )
+
+    LaunchedEffect(note) {
+        bitmap = loadBitmap()
+    }
+
+    Card(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.baseline_sticky_note_2_24),
+                    contentDescription = "Note",
+                )
+                Text(
+                    text = note.createdAt,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Button(
+                    onClick = {
+                        onEdit(note.copy(text = text))
+                        focusManager.clearFocus()
+                    },
+                    enabled = text.isNotBlank(),
+                    modifier = Modifier.alpha(alpha)
+                ) {
+                    Text("Lưu")
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        painter = painterResource(R.drawable.outline_delete_24),
+                        contentDescription = "Delete",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            AsyncImage(
+                model = bitmap,
+                placeholder = painterResource(R.drawable.baseline_image_24),
+                contentDescription = "Note Image",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.LightGray)
+            )
+
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("Nội dung ghi chú") },
+                minLines = 2,
+                maxLines = 5,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { isFocused = it.isFocused },
             )
         }
     }

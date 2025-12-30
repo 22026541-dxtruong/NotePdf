@@ -8,6 +8,8 @@ import android.graphics.RectF
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.collection.LruCache
+import android.graphics.Matrix
+import android.util.Log
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.createBitmap
 import androidx.lifecycle.ViewModel
@@ -20,6 +22,7 @@ import ie.app.notepdf.data.local.entity.Document
 import ie.app.notepdf.data.local.entity.InkStroke
 import ie.app.notepdf.data.local.entity.InkTypeConverters
 import ie.app.notepdf.data.local.entity.NormalizedPoint
+import ie.app.notepdf.data.local.entity.Note
 import ie.app.notepdf.data.local.entity.ToolType
 import ie.app.notepdf.data.local.repository.FileSystemRepository
 import ie.app.notepdf.data.local.repository.NoteRepository
@@ -86,6 +89,7 @@ class PdfViewModel @Inject constructor(
     val pageWords = _pageWords.asStateFlow()
 
     private val bitmapCache = LruCache<Int, Bitmap>(10)
+    private val noteThumbnailCache = LruCache<Long, Bitmap>(50)
 
     private val extractionQueue = ArrayDeque<Pair<Int, Bitmap>>()
     private val queueMutex = Mutex()
@@ -138,7 +142,12 @@ class PdfViewModel @Inject constructor(
                             val highlightLeft = word.rect.left + (localStart * charWidth)
                             val highlightRight = word.rect.left + (localEnd * charWidth)
 
-                            val highlightRect = RectF(highlightLeft, word.rect.top, highlightRight, word.rect.bottom)
+                            val highlightRect = RectF(
+                                highlightLeft,
+                                word.rect.top,
+                                highlightRight,
+                                word.rect.bottom
+                            )
                             matchRects.add(highlightRect)
                         }
                     }
@@ -153,7 +162,11 @@ class PdfViewModel @Inject constructor(
         }
     }
         .flowOn(Dispatchers.Default)
-        .stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5000), initialValue = emptyList())
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
 
     private val _currentMatchIndex = MutableStateFlow(-1)
     val currentMatchIndex = _currentMatchIndex.asStateFlow()
@@ -163,8 +176,12 @@ class PdfViewModel @Inject constructor(
     val currentTool = _currentTool.asStateFlow()
 
     private val _inkStrokesFromDb = MutableStateFlow<List<InkStroke>>(emptyList())
-
     val inkStrokes = _inkStrokesFromDb.map { list ->
+        list.groupBy { it.pageIndex }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+    private val _notesFromDb = MutableStateFlow<List<Note>>(emptyList())
+
+    val notes = _notesFromDb.map { list ->
         list.groupBy { it.pageIndex }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
 
@@ -173,13 +190,20 @@ class PdfViewModel @Inject constructor(
 
     private val jsonConverter = InkTypeConverters()
     private var loadStrokesJob: Job? = null
+    private var loadNotesJob: Job? = null
 
     // --- DRAWING LOGIC ---
     fun setTool(tool: ToolType) {
         _currentTool.value = tool
     }
 
-    fun addStroke(pageIndex: Int, points: List<NormalizedPoint>, color: androidx.compose.ui.graphics.Color, width: Float, toolType: ToolType) {
+    fun addStroke(
+        pageIndex: Int,
+        points: List<NormalizedPoint>,
+        color: androidx.compose.ui.graphics.Color,
+        width: Float,
+        toolType: ToolType
+    ) {
         val currentDocId = _uiState.value.document?.id ?: return
 
         val stroke = InkStroke(
@@ -210,6 +234,110 @@ class PdfViewModel @Inject constructor(
         }
     }
 
+    fun addNote(pageIndex: Int, rect: RectF, text: String = "") {
+        val currentDocId = _uiState.value.document?.id ?: return
+        val note = Note(
+            documentId = currentDocId,
+            pageIndex = pageIndex,
+            x = rect.left,
+            y = rect.top,
+            width = rect.width(),
+            height = rect.height(),
+            text = text
+        )
+        _notesFromDb.update { it + note }
+        viewModelScope.launch {
+            noteRepository.insertNote(note)
+        }
+    }
+
+    fun updateNote(note: Note) {
+        Log.d("PdfViewModel", "Updating note: $note")
+        _notesFromDb.update { list ->
+            list.map { if (it.id == note.id) note else it }
+        }
+        viewModelScope.launch {
+            noteRepository.updateNote(note)
+        }
+    }
+
+    fun deleteNote(note: Note) {
+        _notesFromDb.update { it - note }
+        noteThumbnailCache.remove(note.id)
+        viewModelScope.launch {
+            noteRepository.deleteNote(note.id)
+        }
+    }
+
+    suspend fun getNoteBitmap(context: Context, note: Note): Bitmap? {
+        // 1. Kiểm tra cache
+        noteThumbnailCache[note.id]?.let { return it }
+        // 2. Nếu chưa có, cắt ảnh từ PDF
+        val rect = RectF(note.x, note.y, note.x + note.width, note.y + note.height)
+        val bitmap = captureSelectionBitmap(context, note.pageIndex, rect)
+        // 3. Lưu vào cache và trả về
+        if (bitmap != null) {
+            noteThumbnailCache.put(note.id, bitmap)
+        }
+        return bitmap
+    }
+
+    suspend fun captureSelectionBitmap(context: Context, pageIndex: Int, rect: RectF): Bitmap? {
+        return withContext(Dispatchers.IO) {
+            val renderer = pdfRenderer ?: return@withContext null
+            if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
+
+            try {
+                // Đồng bộ hóa việc truy cập PdfRenderer
+                pdfMutex.withLock {
+                    renderer.openPage(pageIndex).use { page ->
+                        // Tính toán kích thước thật của vùng cắt
+                        // Nhân với mật độ màn hình và hệ số zoom (ví dụ 3.0f) để ảnh sắc nét
+                        val density = context.resources.displayMetrics.density
+                        val scaleFactor = density * 3.0f
+
+                        // Chuyển đổi từ tọa độ chuẩn hóa (0..1) sang kích thước pixel của trang PDF
+                        val pdfPageWidth = page.width
+                        val pdfPageHeight = page.height
+
+                        val clipLeft = (rect.left * pdfPageWidth).toInt()
+                        val clipTop = (rect.top * pdfPageHeight).toInt()
+                        val clipWidth = (rect.width() * pdfPageWidth).toInt()
+                        val clipHeight = (rect.height() * pdfPageHeight).toInt()
+
+                        // Tính kích thước bitmap đích dựa trên scaleFactor
+                        val targetWidth =
+                            (clipWidth.toFloat() / pdfPageWidth * page.width * scaleFactor).toInt()
+                        val targetHeight =
+                            (clipHeight.toFloat() / pdfPageHeight * page.height * scaleFactor).toInt()
+
+                        if (targetWidth <= 0 || targetHeight <= 0) return@use null
+
+                        val bitmap = createBitmap(targetWidth, targetHeight)
+                        val canvas = Canvas(bitmap)
+                        canvas.drawColor(Color.WHITE) // Nền trắng
+
+                        // Ma trận biến đổi:
+                        // 1. Dịch chuyển (Translate) ngược để đưa góc trên-trái của vùng chọn về (0,0)
+                        // 2. Phóng to (Scale) theo hệ số chất lượng
+                        val matrix = Matrix()
+                        matrix.postTranslate(-clipLeft.toFloat(), -clipTop.toFloat())
+                        matrix.postScale(scaleFactor, scaleFactor)
+
+                        // Render trang PDF với ma trận biến đổi vào bitmap
+                        // Clip rect được xử lý tự động bởi kích thước bitmap và matrix translate
+                        page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                        bitmap
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+    }
+
     fun undo() {
         if (undoStack.isEmpty()) return
         val operation = undoStack.removeLast()
@@ -221,6 +349,7 @@ class PdfViewModel @Inject constructor(
                     noteRepository.deleteStroke(operation.strokeId)
                     redoStack.addLast(operation)
                 }
+
                 is InkOperation.Removed -> {
                     // Undo Remove = Insert back
                     val newId = noteRepository.insertStroke(operation.stroke)
@@ -244,6 +373,7 @@ class PdfViewModel @Inject constructor(
                     val updatedStroke = operation.stroke.copy(id = newId)
                     undoStack.addLast(InkOperation.Added(newId, updatedStroke))
                 }
+
                 is InkOperation.Removed -> {
                     // Redo Remove = Delete again
                     noteRepository.deleteStroke(operation.stroke.id)
@@ -261,7 +391,8 @@ class PdfViewModel @Inject constructor(
         }
         viewModelScope.launch {
             searchResults.collect { matches ->
-                if (matches.isNotEmpty() && _currentMatchIndex.value == -1) _currentMatchIndex.value = 0
+                if (matches.isNotEmpty() && _currentMatchIndex.value == -1) _currentMatchIndex.value =
+                    0
                 else if (matches.isEmpty()) _currentMatchIndex.value = -1
             }
         }
@@ -311,17 +442,26 @@ class PdfViewModel @Inject constructor(
                                 val bm = createBitmap(width, height)
                                 val canvas = Canvas(bm)
                                 canvas.drawColor(Color.WHITE)
-                                page.render(bm, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                page.render(
+                                    bm,
+                                    null,
+                                    null,
+                                    PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY
+                                )
                                 bm
                             }
-                        } catch (e: Exception) { null }
+                        } catch (e: Exception) {
+                            null
+                        }
                     }
                     if (bitmap != null) {
                         performTextRecognition(i, bitmap)
                         bitmap.recycle()
                     }
                     yield()
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -357,6 +497,12 @@ class PdfViewModel @Inject constructor(
                                 _inkStrokesFromDb.value = strokes
                             }
                     }
+
+                    loadNotesJob?.cancel()
+                    loadNotesJob = viewModelScope.launch {
+                        noteRepository.getNotesForDocument(documentId)
+                            .collect { notes -> _notesFromDb.value = notes }
+                    }
                 } else {
                     _uiState.update { it.copy(errorMessage = "Không tìm thấy tài liệu") }
                 }
@@ -388,7 +534,9 @@ class PdfViewModel @Inject constructor(
                         bitmap
                     }
                 }
-            } catch (e: Exception) { e.printStackTrace(); null }
+            } catch (e: Exception) {
+                e.printStackTrace(); null
+            }
         }
     }
 
@@ -398,7 +546,9 @@ class PdfViewModel @Inject constructor(
             queueMutex.withLock {
                 val iterator = extractionQueue.iterator()
                 while (iterator.hasNext()) {
-                    if (iterator.next().first == index) { iterator.remove(); break }
+                    if (iterator.next().first == index) {
+                        iterator.remove(); break
+                    }
                 }
                 extractionQueue.addLast(index to bitmap)
             }
@@ -406,36 +556,39 @@ class PdfViewModel @Inject constructor(
         }
     }
 
-    private suspend fun performTextRecognition(index: Int, bitmap: Bitmap) = suspendCancellableCoroutine { continuation ->
-        try {
-            val image = InputImage.fromBitmap(bitmap, 0)
-            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-            val bitmapWidth = bitmap.width.toFloat()
-            val bitmapHeight = bitmap.height.toFloat()
-            recognizer.process(image)
-                .addOnSuccessListener { visionText ->
-                    val wordsList = mutableListOf<WordInfo>()
-                    for (block in visionText.textBlocks) {
-                        for (line in block.lines) {
-                            for (element in line.elements) {
-                                element.boundingBox?.let { box ->
-                                    val normalizedRect = RectF(
-                                        box.left / bitmapWidth,
-                                        box.top / bitmapHeight,
-                                        box.right / bitmapWidth,
-                                        box.bottom / bitmapHeight
-                                    )
-                                    wordsList.add(WordInfo(element.text, normalizedRect))
+    private suspend fun performTextRecognition(index: Int, bitmap: Bitmap) =
+        suspendCancellableCoroutine { continuation ->
+            try {
+                val image = InputImage.fromBitmap(bitmap, 0)
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                val bitmapWidth = bitmap.width.toFloat()
+                val bitmapHeight = bitmap.height.toFloat()
+                recognizer.process(image)
+                    .addOnSuccessListener { visionText ->
+                        val wordsList = mutableListOf<WordInfo>()
+                        for (block in visionText.textBlocks) {
+                            for (line in block.lines) {
+                                for (element in line.elements) {
+                                    element.boundingBox?.let { box ->
+                                        val normalizedRect = RectF(
+                                            box.left / bitmapWidth,
+                                            box.top / bitmapHeight,
+                                            box.right / bitmapWidth,
+                                            box.bottom / bitmapHeight
+                                        )
+                                        wordsList.add(WordInfo(element.text, normalizedRect))
+                                    }
                                 }
                             }
                         }
+                        _pageWords.update { it + (index to wordsList) }
+                        continuation.resume(Unit)
                     }
-                    _pageWords.update { it + (index to wordsList) }
-                    continuation.resume(Unit)
-                }
-                .addOnFailureListener { e -> e.printStackTrace(); continuation.resume(Unit) }
-        } catch (e: Exception) { e.printStackTrace(); continuation.resume(Unit) }
-    }
+                    .addOnFailureListener { e -> e.printStackTrace(); continuation.resume(Unit) }
+            } catch (e: Exception) {
+                e.printStackTrace(); continuation.resume(Unit)
+            }
+        }
 
     private fun openPdfFromPath(path: String) {
         try {
@@ -453,7 +606,9 @@ class PdfViewModel @Inject constructor(
         try {
             pdfRenderer?.close()
             fileDescriptor?.close()
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         pdfRenderer = null
         fileDescriptor = null
         bitmapCache.evictAll()

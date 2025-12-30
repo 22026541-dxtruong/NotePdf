@@ -6,6 +6,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import ie.app.notepdf.data.local.dao.FileSystemDao
 import ie.app.notepdf.data.local.dao.InkStrokeDao
+import ie.app.notepdf.data.local.dao.NoteDao
 import ie.app.notepdf.data.local.repository.FileSystemRepository
 import ie.app.notepdf.data.local.repository.NoteRepository
 import javax.inject.Singleton
@@ -21,7 +22,7 @@ object RepositoryModule {
 
     @Provides
     @Singleton
-    fun provideNoteRepository(inkStrokeDao: InkStrokeDao) =
-        NoteRepository(inkStrokeDao)
+    fun provideNoteRepository(inkStrokeDao: InkStrokeDao, noteDao: NoteDao) =
+        NoteRepository(inkStrokeDao, noteDao)
 
 }

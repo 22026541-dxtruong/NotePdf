@@ -2,6 +2,7 @@ package ie.app.notepdf.data.local.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.ForeignKey
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import kotlinx.serialization.Serializable
@@ -10,7 +11,8 @@ import kotlinx.serialization.json.Json
 enum class ToolType(val value: Int) {
     PEN(0),
     HIGHLIGHTER(1),
-    ERASER(2), // Dùng cho logic tẩy, có thể không lưu vào DB nếu xóa trực tiếp
+    ERASER(2), // Dùng cho logic tẩy, có thể không lưu vào DB nếu xóa trực tiếp,
+    BOX_SELECT(3),
     NONE(-1);
 
     companion object {
@@ -21,11 +23,12 @@ enum class ToolType(val value: Int) {
 @Entity(
     tableName = "ink_strokes",
     foreignKeys = [
-        androidx.room.ForeignKey(
+        ForeignKey(
             entity = Document::class,
             parentColumns = ["id"],
             childColumns = ["document_id"],
-            onDelete = androidx.room.ForeignKey.CASCADE
+            onDelete = ForeignKey.CASCADE,
+            onUpdate = ForeignKey.CASCADE
         )
     ]
 )

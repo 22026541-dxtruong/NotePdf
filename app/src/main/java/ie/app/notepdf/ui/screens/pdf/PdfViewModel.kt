@@ -9,7 +9,6 @@ import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.collection.LruCache
 import android.graphics.Matrix
-import android.util.Log
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.createBitmap
 import androidx.lifecycle.ViewModel
@@ -22,8 +21,12 @@ import ie.app.notepdf.data.local.entity.Document
 import ie.app.notepdf.data.local.entity.InkStroke
 import ie.app.notepdf.data.local.entity.InkTypeConverters
 import ie.app.notepdf.data.local.entity.NormalizedPoint
-import ie.app.notepdf.data.local.entity.Note
+import ie.app.notepdf.data.local.entity.NormalizedRect
+import ie.app.notepdf.data.local.entity.NoteBox
+import ie.app.notepdf.data.local.entity.NoteText
+import ie.app.notepdf.data.local.entity.NoteTextConverters
 import ie.app.notepdf.data.local.entity.ToolType
+import ie.app.notepdf.data.local.relation.NoteBoxAndNoteText
 import ie.app.notepdf.data.local.repository.FileSystemRepository
 import ie.app.notepdf.data.local.repository.NoteRepository
 import kotlinx.coroutines.Dispatchers
@@ -179,16 +182,16 @@ class PdfViewModel @Inject constructor(
     val inkStrokes = _inkStrokesFromDb.map { list ->
         list.groupBy { it.pageIndex }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
-    private val _notesFromDb = MutableStateFlow<List<Note>>(emptyList())
+    private val _notes = MutableStateFlow<Map<Int, NoteBoxAndNoteText>>(emptyMap())
 
-    val notes = _notesFromDb.map { list ->
-        list.groupBy { it.pageIndex }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+    val notes = _notes.asStateFlow()
 
     private val undoStack = ArrayDeque<InkOperation>()
     private val redoStack = ArrayDeque<InkOperation>()
 
     private val jsonConverter = InkTypeConverters()
+    private val noteConverter = NoteTextConverters()
+
     private var loadStrokesJob: Job? = null
     private var loadNotesJob: Job? = null
 
@@ -234,9 +237,9 @@ class PdfViewModel @Inject constructor(
         }
     }
 
-    fun addNote(pageIndex: Int, rect: RectF, text: String = "") {
+    fun addNoteBox(pageIndex: Int, rect: RectF, text: String = "") {
         val currentDocId = _uiState.value.document?.id ?: return
-        val note = Note(
+        val noteBox = NoteBox(
             documentId = currentDocId,
             pageIndex = pageIndex,
             x = rect.left,
@@ -245,31 +248,93 @@ class PdfViewModel @Inject constructor(
             height = rect.height(),
             text = text
         )
-        _notesFromDb.update { it + note }
+        _notes.update { currentMap ->
+            val currentPageData = currentMap[pageIndex] ?: NoteBoxAndNoteText()
+            currentMap + (pageIndex to currentPageData.copy(
+                noteBoxs = currentPageData.noteBoxs + noteBox
+            ))
+        }
         viewModelScope.launch {
-            noteRepository.insertNote(note)
+            noteRepository.insertNoteBox(noteBox)
         }
     }
 
-    fun updateNote(note: Note) {
-        Log.d("PdfViewModel", "Updating note: $note")
-        _notesFromDb.update { list ->
-            list.map { if (it.id == note.id) note else it }
+    fun updateNoteBox(noteBox: NoteBox) {
+        _notes.update { currentMap ->
+            val currentPageData = currentMap[noteBox.pageIndex] ?: NoteBoxAndNoteText()
+            currentMap + (noteBox.pageIndex to currentPageData.copy(
+                noteBoxs = currentPageData.noteBoxs.map { if (it.id == noteBox.id) noteBox else it }
+            ))
         }
         viewModelScope.launch {
-            noteRepository.updateNote(note)
+            noteRepository.updateNoteBox(noteBox)
         }
     }
 
-    fun deleteNote(note: Note) {
-        _notesFromDb.update { it - note }
-        noteThumbnailCache.remove(note.id)
+    fun deleteNoteBox(noteBox: NoteBox) {
+        _notes.update { currentMap ->
+            val currentPageData = currentMap[noteBox.pageIndex] ?: NoteBoxAndNoteText()
+            currentMap + (noteBox.pageIndex to currentPageData.copy(
+                noteBoxs = currentPageData.noteBoxs - noteBox
+            ))
+        }
+        noteThumbnailCache.remove(noteBox.id)
         viewModelScope.launch {
-            noteRepository.deleteNote(note.id)
+            noteRepository.deleteNoteBox(noteBox.id)
         }
     }
 
-    suspend fun getNoteBitmap(context: Context, note: Note): Bitmap? {
+    fun addNoteText(pageIndex: Int, rects: List<RectF>, text: String, comment: String) {
+        val currentDocId = _uiState.value.document?.id ?: return
+        // Chuyển List<RectF> sang List<NormalizedRect> để lưu vào DB
+        val normalizedRects = rects.map {
+            NormalizedRect(it.left, it.top, it.right, it.bottom)
+        }
+        val pointsJson = noteConverter.fromRectList(normalizedRects)
+        val noteText = NoteText(
+            documentId = currentDocId,
+            pageIndex = pageIndex,
+            pointsJson = pointsJson,
+            text = text,
+            comment = comment
+        )
+        _notes.update { currentMap ->
+            val currentPageData = currentMap[pageIndex] ?: NoteBoxAndNoteText()
+            currentMap + (pageIndex to currentPageData.copy(
+                noteTexts = currentPageData.noteTexts + noteText
+            ))
+        }
+
+        viewModelScope.launch {
+            noteRepository.insertNoteText(noteText)
+        }
+    }
+
+    fun updateNoteText(noteText: NoteText) {
+        _notes.update { currentMap ->
+            val currentPageData = currentMap[noteText.pageIndex] ?: NoteBoxAndNoteText()
+            currentMap + (noteText.pageIndex to currentPageData.copy(
+                noteTexts = currentPageData.noteTexts.map { if (it.id == noteText.id) noteText else it }
+            ))
+        }
+        viewModelScope.launch {
+            noteRepository.updateNoteText(noteText)
+        }
+    }
+
+    fun deleteNoteText(noteText: NoteText) {
+        _notes.update { currentMap ->
+            val currentPageData = currentMap[noteText.pageIndex] ?: NoteBoxAndNoteText()
+            currentMap + (noteText.pageIndex to currentPageData.copy(
+                noteTexts = currentPageData.noteTexts - noteText
+            ))
+        }
+        viewModelScope.launch {
+            noteRepository.deleteNoteText(noteText.id)
+        }
+    }
+
+    suspend fun getNoteBitmap(context: Context, note: NoteBox): Bitmap? {
         // 1. Kiểm tra cache
         noteThumbnailCache[note.id]?.let { return it }
         // 2. Nếu chưa có, cắt ảnh từ PDF
@@ -501,7 +566,7 @@ class PdfViewModel @Inject constructor(
                     loadNotesJob?.cancel()
                     loadNotesJob = viewModelScope.launch {
                         noteRepository.getNotesForDocument(documentId)
-                            .collect { notes -> _notesFromDb.value = notes }
+                            .collect { notes -> _notes.value = notes }
                     }
                 } else {
                     _uiState.update { it.copy(errorMessage = "Không tìm thấy tài liệu") }

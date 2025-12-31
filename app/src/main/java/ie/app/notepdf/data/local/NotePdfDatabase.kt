@@ -11,17 +11,19 @@ import ie.app.notepdf.data.local.entity.Document
 import ie.app.notepdf.data.local.entity.Folder
 import ie.app.notepdf.data.local.entity.InkStroke
 import ie.app.notepdf.data.local.entity.InkTypeConverters
-import ie.app.notepdf.data.local.entity.Note
+import ie.app.notepdf.data.local.entity.NoteBox
+import ie.app.notepdf.data.local.entity.NoteText
+import ie.app.notepdf.data.local.entity.NoteTextConverters
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 @Database(
-    entities = [Folder::class, Document::class, InkStroke::class, Note::class],
+    entities = [Folder::class, Document::class, InkStroke::class, NoteBox::class, NoteText::class],
     version = 1,
     exportSchema = false
 )
-@TypeConverters(InkTypeConverters::class, DateToStringConverter::class)
+@TypeConverters(InkTypeConverters::class, DateToStringConverter::class, NoteTextConverters::class)
 abstract class NotePdfDatabase : RoomDatabase() {
 
     abstract fun fileSystemDao(): FileSystemDao

@@ -2,6 +2,7 @@ package ie.app.notepdf.ui.screens.pdf
 
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -78,6 +79,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -88,6 +91,7 @@ import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.ColorPainter
@@ -96,11 +100,14 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -112,8 +119,11 @@ import ie.app.notepdf.R
 import ie.app.notepdf.data.local.entity.InkStroke
 import ie.app.notepdf.data.local.entity.InkTypeConverters
 import ie.app.notepdf.data.local.entity.NormalizedPoint
-import ie.app.notepdf.data.local.entity.Note
+import ie.app.notepdf.data.local.entity.NoteBox
+import ie.app.notepdf.data.local.entity.NoteText
+import ie.app.notepdf.data.local.entity.NoteTextConverters
 import ie.app.notepdf.data.local.entity.ToolType
+import ie.app.notepdf.data.local.relation.NoteBoxAndNoteText
 import ie.app.notepdf.ui.component.ToggleFloatingActionButton
 import ie.app.notepdf.ui.component.ToggleFloatingActionButtonDefaults
 import ie.app.notepdf.ui.component.ToggleFloatingActionButtonDefaults.animateIcon
@@ -143,10 +153,12 @@ fun PdfScreen(
     viewModel: PdfViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboard.current
 
     val uiState by viewModel.uiState.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val allWords by viewModel.pageWords.collectAsState()
     val currentMatchIndex by viewModel.currentMatchIndex.collectAsState()
     val currentTool by viewModel.currentTool.collectAsState()
     val inkStrokes by viewModel.inkStrokes.collectAsState()
@@ -173,13 +185,23 @@ fun PdfScreen(
     var boxLayoutCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
 
     // --- States cho Dialog Ghi chú ---
-    var showNoteDialog by remember { mutableStateOf(false) }
+    var showNoteBoxDialog by remember { mutableStateOf(false) }
     var showNoteListSheet by remember { mutableStateOf(false) }
     var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var capturedRect by remember { mutableStateOf<RectF?>(null) }
-    var capturedPageIndex by remember { mutableIntStateOf(-1) }
 
-    var selectedNote by remember { mutableStateOf<Note?>(null) }
+    var showNoteComment by remember { mutableStateOf(false) }
+    var noteText by remember { mutableStateOf("") }
+    var textRect by remember { mutableStateOf<List<RectF>>(emptyList()) }
+
+    var notePageIndex by remember { mutableIntStateOf(-1) }
+
+    var selectedNoteBox by remember { mutableStateOf<NoteBox?>(null) }
+    var selectedNoteText by remember { mutableStateOf<NoteText?>(null) }
+
+    var isActiveOfFab by remember { mutableStateOf(false) }
+    var commentMode by remember { mutableStateOf(false) }
+    var selectionTextMode by remember { mutableStateOf(false) }
 
     // State cho LazyColumn
     val listState = rememberLazyListState()
@@ -192,6 +214,7 @@ fun PdfScreen(
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) {
             globalSelection = GlobalSelectionState()
+            isActiveOfFab = false
         }
     }
 
@@ -247,16 +270,16 @@ fun PdfScreen(
         }
     }
 
-    if (showNoteDialog && capturedBitmap != null && capturedRect != null) {
-        NoteDialog(
+    if (showNoteBoxDialog && capturedBitmap != null && capturedRect != null) {
+        NoteBoxDialog(
             bitmap = capturedBitmap!!,
             onDismiss = {
-                showNoteDialog = false
+                showNoteBoxDialog = false
                 capturedBitmap = null // Clear bitmap
             },
             onSave = { text ->
-                viewModel.addNote(capturedPageIndex, capturedRect!!, text)
-                showNoteDialog = false
+                viewModel.addNoteBox(notePageIndex, capturedRect!!, text)
+                showNoteBoxDialog = false
                 capturedBitmap = null
                 // Chuyển về tool NONE sau khi lưu để người dùng có thể scroll tiếp
                 viewModel.setTool(ToolType.NONE)
@@ -269,19 +292,30 @@ fun PdfScreen(
             notes = notes,
             currentPage = listState.firstVisibleItemIndex,
             onDismiss = { showNoteListSheet = false },
-            onNoteSelected = { note ->
+            onNoteBoxSelected = { noteBox ->
                 scope.launch {
                     showNoteListSheet = false
-                    selectedNote = note
-                    listState.animateScrollToItem(note.pageIndex)
+                    selectedNoteBox = noteBox
+                    listState.animateScrollToItem(noteBox.pageIndex)
                 }
             },
-            onDeleteNote = { note -> viewModel.deleteNote(note) },
-            onUpdateNote = { note ->
-                viewModel.updateNote(note)
+            onDeleteNoteBox = { noteBox -> viewModel.deleteNoteBox(noteBox) },
+            onUpdateNoteBox = { noteBox ->
+                viewModel.updateNoteBox(noteBox)
             },
-            loadNoteBitmap = { note ->
-                viewModel.getNoteBitmap(context, note)
+            onNoteTextSelected = { noteText ->
+                scope.launch {
+                    showNoteListSheet = false
+                    selectedNoteText = noteText
+                    listState.animateScrollToItem(noteText.pageIndex)
+                }
+            },
+            onUpdateNoteText = { noteText ->
+                viewModel.updateNoteText(noteText)
+            },
+            onDeleteNoteText = { noteText -> viewModel.deleteNoteText(noteText) },
+            loadNoteBitmap = { noteBox ->
+                viewModel.getNoteBitmap(context, noteBox)
             }
         )
     }
@@ -290,6 +324,41 @@ fun PdfScreen(
         topBar = {
             PdfTopBar(
                 title = documentName,
+                commentMode = commentMode,
+                onCommentModeChanged = {
+                    commentMode = !commentMode
+                    if (commentMode) isActiveOfFab = true
+                },
+                selectionTextMode = selectionTextMode,
+                onCopy = {
+                    val text = globalSelection.selection.selectedWords.joinToString(" ") { it.text }
+                    clipboardManager.nativeClipboard.text = AnnotatedString(text)
+                    Toast.makeText(context, "Đã copy", Toast.LENGTH_SHORT).show()
+                },
+                onSelectAll = {
+                    allWords[globalSelection.pageIndex]?.let {
+                        if (it.isNotEmpty()) {
+                            globalSelection = GlobalSelectionState(
+                                globalSelection.pageIndex,
+                                SelectionState(
+                                    startIndex = 0,
+                                    endIndex = it.lastIndex,
+                                    selectedWords = it
+                                )
+                            )
+                        }
+                    }
+                },
+                onComment = {
+                    val selectedRects =
+                        globalSelection.selection.selectedWords.map { it.rect }
+                    val mergedSelectionRects = mergeRectangles(selectedRects)
+                    textRect = mergedSelectionRects
+                    notePageIndex = globalSelection.pageIndex
+                    noteText = globalSelection.selection.selectedWords.joinToString(" ") { it.text }
+                    isActiveOfFab = false
+                    showNoteComment = true
+                },
                 searchQuery = searchQuery,
                 searchResults = searchResults,
                 onSearchQueryChange = viewModel::onSearchQueryChange,
@@ -303,7 +372,7 @@ fun PdfScreen(
         },
         floatingActionButton = {
             PdfFabMenu(
-                listState,
+                isActiveOfFab && commentMode,
                 currentTool,
                 onToolSelected = viewModel::setTool,
                 onUndo = viewModel::undo,
@@ -385,16 +454,19 @@ fun PdfScreen(
                             } else null
                         PdfPageItem(
                             index = index,
+                            commentMode = commentMode,
                             viewModel = viewModel,
+                            allWords = allWords,
                             currentScale = scale,
+                            onSelectionTextModeChanged = { selectionTextMode = it },
                             selectionState = pageSelection,
                             pageMatches = pageMatches,
                             focusedMatch = focusedMatch,
                             currentTool = currentTool,
-                            selectedNote = selectedNote,
-                            onSelectedNote = { selectedNote = null },
+                            selectedNoteBox = selectedNoteBox,
+                            selectedNoteText = selectedNoteText,
                             pageStrokes = inkStrokes[index] ?: emptyList(),
-                            pageNotes = notes[index] ?: emptyList(),
+                            pageNotes = notes[index] ?: NoteBoxAndNoteText(),
                             onSelectionChanged = { newSelection ->
                                 globalSelection = GlobalSelectionState(index, newSelection)
                             },
@@ -407,6 +479,13 @@ fun PdfScreen(
                             },
                             onHandleTouch = { isTouched ->
                                 isHandleTouched = isTouched
+                            },
+                            onTap = {
+                                isActiveOfFab = if (showNoteComment) false else !isActiveOfFab
+                                selectedNoteBox = null
+                                selectedNoteText = null
+                                selectionTextMode = false
+                                showNoteComment = false
                             },
                             onDoubleTap = { windowTapPos ->
                                 if (currentTool == ToolType.NONE) {
@@ -437,15 +516,14 @@ fun PdfScreen(
                             },
                             onAreaSelected = { rect ->
                                 if (rect.width() > 0 && rect.height() > 0) {
-                                    // Cắt ảnh bất đồng bộ và hiện dialog
                                     scope.launch {
                                         val bitmap =
                                             viewModel.captureSelectionBitmap(context, index, rect)
                                         if (bitmap != null) {
                                             capturedBitmap = bitmap
                                             capturedRect = rect
-                                            capturedPageIndex = index
-                                            showNoteDialog = true
+                                            notePageIndex = index
+                                            showNoteBoxDialog = true
                                         }
                                     }
                                 }
@@ -460,6 +538,16 @@ fun PdfScreen(
                     pageCount = document.pageCount,
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
+
+                if (showNoteComment) {
+                    NoteTextComment(
+                        onSave = {
+                            viewModel.addNoteText(notePageIndex, textRect, noteText, it)
+                            showNoteComment = false
+                        },
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
             }
         }
     }
@@ -469,6 +557,12 @@ fun PdfScreen(
 @Composable
 fun PdfTopBar(
     title: String,
+    commentMode: Boolean,
+    onCommentModeChanged: () -> Unit,
+    selectionTextMode: Boolean,
+    onCopy: () -> Unit = {},
+    onSelectAll: () -> Unit = {},
+    onComment: () -> Unit = {},
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit = {},
     clearSearch: () -> Unit = {},
@@ -558,7 +652,32 @@ fun PdfTopBar(
                         contentDescription = "Close"
                     )
                 }
+            } else if (selectionTextMode) {
+                IconButton(onClick = onCopy) {
+                    Icon(
+                        painter = painterResource(R.drawable.baseline_content_copy_24),
+                        contentDescription = "Copy"
+                    )
+                }
+                IconButton(onClick = onSelectAll) {
+                    Icon(
+                        painter = painterResource(R.drawable.baseline_select_all_24),
+                        contentDescription = "Select All"
+                    )
+                }
+                IconButton(onClick = onComment) {
+                    Icon(
+                        painter = painterResource(R.drawable.outline_add_comment_24),
+                        contentDescription = "Comment"
+                    )
+                }
             } else {
+                IconButton(onClick = onCommentModeChanged) {
+                    Icon(
+                        painter = painterResource(if (commentMode) R.drawable.outline_edit_off_24 else R.drawable.baseline_edit_document_24),
+                        contentDescription = "Edit"
+                    )
+                }
                 IconButton(onClick = onShowNoteList) {
                     Icon(
                         painter = painterResource(R.drawable.outline_comment_24),
@@ -580,21 +699,13 @@ fun PdfTopBar(
 
 @Composable
 fun PdfFabMenu(
-    listState: LazyListState,
+    isActive: Boolean,
     currentTool: ToolType,
     onToolSelected: (ToolType) -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit
 ) {
     var isMenuExpand by remember { mutableStateOf(false) }
-
-    val isActive by remember {
-        derivedStateOf {
-            ((listState.canScrollForward && !listState.isScrollInProgress)
-                    || isMenuExpand)
-                    && currentTool != ToolType.BOX_SELECT
-        }
-    }
 
     val alpha by animateFloatAsState(
         targetValue = if (isActive) 1f else 0f,
@@ -614,7 +725,7 @@ fun PdfFabMenu(
             containerColor = if (currentTool == ToolType.BOX_SELECT) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.primaryContainer
         ) {
             Icon(
-                painter = painterResource(if (currentTool == ToolType.BOX_SELECT) R.drawable.baseline_clear_24 else R.drawable.outline_add_comment_24),
+                painter = painterResource(if (currentTool == ToolType.BOX_SELECT) R.drawable.outline_remove_selection_24 else R.drawable.outline_add_comment_24),
                 contentDescription = "Add Comment"
             )
         }
@@ -888,28 +999,32 @@ enum class DragHandle { Start, End }
 @Composable
 fun PdfPageItem(
     index: Int,
+    commentMode: Boolean,
+    onSelectionTextModeChanged: (Boolean) -> Unit,
     viewModel: PdfViewModel,
+    allWords: Map<Int, List<WordInfo>>,
     currentScale: Float,
     selectionState: SelectionState,
     pageMatches: List<SearchMatch>,
     focusedMatch: SearchMatch?,
     currentTool: ToolType,
-    selectedNote: Note?,
-    onSelectedNote: () -> Unit = {},
+    selectedNoteBox: NoteBox?,
+    selectedNoteText: NoteText?,
     pageStrokes: List<InkStroke>,
-    pageNotes: List<Note>,
+    pageNotes: NoteBoxAndNoteText,
     onSelectionChanged: (SelectionState) -> Unit,
     onSelectionDragStateChange: (Boolean) -> Unit,
     onDragScreenPosition: (Offset) -> Unit,
     onHandleTouch: (Boolean) -> Unit,
+    onTap: () -> Unit = {},
     onDoubleTap: (Offset) -> Unit,
     onStrokeAdded: (List<NormalizedPoint>, Color, Float, ToolType) -> Unit,
     onStrokeRemoved: (InkStroke) -> Unit,
-    onAreaSelected: (RectF) -> Unit
+    onAreaSelected: (RectF) -> Unit,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
-    val allWords by viewModel.pageWords.collectAsState()
+
     val wordsOfThisPage = allWords[index] ?: emptyList()
 
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -1003,7 +1118,7 @@ fun PdfPageItem(
                                         )
                                     }
                                 }
-                                // Kết thúc kéo: Chuẩn hóa Rect và gọi callback lưu Note
+// Kết thúc kéo: Chuẩn hóa Rect và gọi callback lưu Note
                                 currentBoxSelection?.let { finalRect ->
                                     if (viewSize.width > 0 && viewSize.height > 0) {
                                         val normalizedRect = RectF(
@@ -1027,7 +1142,7 @@ fun PdfPageItem(
                                     else {
                                         change.consume()
                                         val pos = change.position
-                                        // Eraser logic
+// Eraser logic
                                         val hitStroke = pageStrokes.find { stroke ->
                                             val points =
                                                 InkTypeConverters().toPointsList(stroke.pointsJson)
@@ -1043,7 +1158,7 @@ fun PdfPageItem(
                             }
 
                             else -> {
-                                // Pen/Highlighter Logic
+// Pen/Highlighter Logic
                                 currentDrawingPoints = listOf(startPos)
                                 var dragging = true
                                 while (dragging) {
@@ -1053,7 +1168,7 @@ fun PdfPageItem(
                                     else {
                                         change.consume()
                                         val newPos = change.position.clamp()
-                                        // Tránh thêm điểm trùng lặp nếu người dùng giữ tay ở mép
+// Tránh thêm điểm trùng lặp nếu người dùng giữ tay ở mép
                                         if (currentDrawingPoints.isEmpty() || newPos != currentDrawingPoints.last()) {
                                             currentDrawingPoints = currentDrawingPoints + newPos
                                         }
@@ -1087,8 +1202,9 @@ fun PdfPageItem(
                             }
                         },
                         onTap = {
-                            onSelectedNote()
+                            onTap()
                             onSelectionChanged(SelectionState())
+                            onSelectionDragStateChange(false)
                         },
                         onLongPress = { localOffset ->
                             val wordIndex = findWordIndexAt(localOffset, wordsOfThisPage, viewSize)
@@ -1100,6 +1216,7 @@ fun PdfPageItem(
                                         selectedWords = listOf(wordsOfThisPage[wordIndex])
                                     )
                                 )
+                                onSelectionTextModeChanged(true)
                             }
                         }
                     )
@@ -1133,6 +1250,11 @@ fun PdfPageItem(
                                     }
                                 }
                             }
+                        },
+                        onDragEnd = {
+                            if (selectionState.selectedWords.isNotEmpty()) {
+                                onSelectionDragStateChange(true)
+                            }
                         }
                     )
                 }
@@ -1155,15 +1277,17 @@ fun PdfPageItem(
                     // 2. CACHE SELECTION RECTS
                     val viewSizeInt = IntSize(size.width.toInt(), size.height.toInt())
                     val selectedRects =
-                        selectionState.selectedWords.map { it.rect.toScreenRect(viewSizeInt) }
+                        selectionState.selectedWords.map { it.rect }
                     val mergedSelectionRects = mergeRectangles(selectedRects)
+                        .map { it.toScreenRect(viewSizeInt) }
 
                     // 3. CACHE SEARCH HIGHLIGHTS
                     val cachedSearchMatches = pageMatches.map { match ->
                         val isFocused = (focusedMatch != null && focusedMatch == match)
                         val color = if (isFocused) Color(0x99FF8800) else Color(0x66FFFF00)
                         val rects =
-                            mergeRectangles(match.rects.map { it.toScreenRect(viewSizeInt) })
+                            mergeRectangles(match.rects)
+                                .map { it.toScreenRect(viewSizeInt) }
                         Triple(rects, color, isFocused)
                     }
 
@@ -1188,106 +1312,140 @@ fun PdfPageItem(
                     onDrawWithContent {
                         drawContent() // Vẽ ảnh nền
 
-                        pageNotes.forEach { note ->
-                            val noteRect =
-                                RectF(note.x, note.y, note.x + note.width, note.y + note.height)
-                            val screenRect = noteRect.toScreenRect(
-                                IntSize(
-                                    size.width.toInt(),
-                                    size.height.toInt()
-                                )
-                            )
-                            drawRect(
-                                color = if (note.id == selectedNote?.id) Color.Blue.copy(alpha = 0.4f) else Color.Gray.copy(alpha = 0.5f),
-                                topLeft = screenRect.topLeft,
-                                size = screenRect.size,
-                                style = Stroke(width = 1.dp.toPx() / currentScale)
-                            )
-                        }
-                        // Vẽ nét mực cũ (từ cache)
-                        strokePaths.forEach { (stroke, path) ->
-                            val color = Color(stroke.color).copy(alpha = stroke.alpha)
-                            drawPath(
-                                path = path,
-                                color = color,
-                                style = Stroke(
-                                    width = stroke.strokeWidth * size.width,
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round
-                                )
-                            )
-                        }
-
-                        // Vẽ nét đang vẽ (không cache)
-                        if (currentDrawingPoints.isNotEmpty()) {
-                            val path = Path()
-                            path.moveTo(
-                                currentDrawingPoints.first().x,
-                                currentDrawingPoints.first().y
-                            )
-                            for (i in 1 until currentDrawingPoints.size) {
-                                path.lineTo(currentDrawingPoints[i].x, currentDrawingPoints[i].y)
-                            }
-                            val color =
-                                if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow.copy(alpha = 0.4f) else Color.Red
-                            val width =
-                                if (currentTool == ToolType.HIGHLIGHTER) 0.03f * size.width else 0.005f * size.width
-                            drawPath(
-                                path = path,
-                                color = color,
-                                style = Stroke(
-                                    width = width,
-                                    cap = StrokeCap.Round,
-                                    join = StrokeJoin.Round
-                                )
-                            )
-                        }
-
-                        if (currentTool == ToolType.BOX_SELECT) {
-                            val dimColor = Color.Black.copy(alpha = 0.4f)
-
-                            // 1. Nền tối toàn màn hình
-                            val outerPath = Path().apply {
-                                addRect(Rect(0f, 0f, size.width, size.height))
-                            }
-
-                            // 2. Các vùng cần làm sáng (Lỗ thủng)
-                            val holesPath = Path()
-
-                            // Vùng đang kéo
-                            currentBoxSelection?.let { selection ->
-                                holesPath.addRect(selection)
-                            }
-
-                            // Các ghi chú đã lưu
-                            pageNotes.forEach { note ->
+                        if (commentMode) {
+                            pageNotes.noteBoxs.forEach { noteBox ->
                                 val noteRect =
-                                    RectF(note.x, note.y, note.x + note.width, note.y + note.height)
-                                holesPath.addRect(noteRect.toScreenRect(viewSizeInt))
-                            }
-
-                            // 3. Trừ vùng lỗ khỏi nền tối (Sử dụng Path Operation Difference thay vì EvenOdd)
-                            // Điều này đảm bảo các lỗ hổng chồng nhau vẫn là lỗ hổng (Hole OR Hole = Hole)
-                            // thay vì bị lấp đầy lại (Hole XOR Hole = Fill) như EvenOdd.
-                            outerPath.op(outerPath, holesPath, PathOperation.Difference)
-
-                            drawPath(path = outerPath, color = dimColor)
-
-                            currentBoxSelection?.let { rect ->
-                                drawRect(
-                                    color = Color(0xFF4285F4),
-                                    topLeft = rect.topLeft,
-                                    size = rect.size,
-                                    style = Stroke(
-                                        width = 2.dp.toPx() / currentScale,
-                                        pathEffect = PathEffect.dashPathEffect(
-                                            floatArrayOf(
-                                                20f,
-                                                20f
-                                            ), 0f
-                                        )
+                                    RectF(
+                                        noteBox.x,
+                                        noteBox.y,
+                                        noteBox.x + noteBox.width,
+                                        noteBox.y + noteBox.height
+                                    )
+                                val screenRect = noteRect.toScreenRect(
+                                    IntSize(
+                                        size.width.toInt(),
+                                        size.height.toInt()
                                     )
                                 )
+                                drawRect(
+                                    color = if (noteBox.id == selectedNoteBox?.id) Color.Blue.copy(
+                                        alpha = 0.4f
+                                    ) else Color.Gray.copy(
+                                        alpha = 0.5f
+                                    ),
+                                    topLeft = screenRect.topLeft,
+                                    size = screenRect.size,
+                                    style = Stroke(width = 1.dp.toPx() / currentScale)
+                                )
+                            }
+                            pageNotes.noteTexts.forEach { noteText ->
+                                val rects = NoteTextConverters().toRectList(noteText.pointsJson)
+                                rects.forEach { r ->
+                                    val noteRect = RectF(r.left, r.top, r.right, r.bottom)
+                                    val screenRect = noteRect.toScreenRect(viewSizeInt)
+                                    drawRect(
+                                        color = Color.Green.copy(alpha = 0.5f),
+                                        topLeft = screenRect.topLeft,
+                                        size = screenRect.size,
+                                        style = if (noteText.id != selectedNoteText?.id) Fill else Stroke(
+                                            width = 1.dp.toPx() / currentScale
+                                        )
+                                    )
+                                }
+                            }
+                            // Vẽ nét mực cũ (từ cache)
+                            strokePaths.forEach { (stroke, path) ->
+                                val color = Color(stroke.color).copy(alpha = stroke.alpha)
+                                drawPath(
+                                    path = path,
+                                    color = color,
+                                    style = Stroke(
+                                        width = stroke.strokeWidth * size.width,
+                                        cap = StrokeCap.Round,
+                                        join = StrokeJoin.Round
+                                    )
+                                )
+                            }
+
+                            // Vẽ nét đang vẽ (không cache)
+                            if (currentDrawingPoints.isNotEmpty()) {
+                                val path = Path()
+                                path.moveTo(
+                                    currentDrawingPoints.first().x,
+                                    currentDrawingPoints.first().y
+                                )
+                                for (i in 1 until currentDrawingPoints.size) {
+                                    path.lineTo(
+                                        currentDrawingPoints[i].x,
+                                        currentDrawingPoints[i].y
+                                    )
+                                }
+                                val color =
+                                    if (currentTool == ToolType.HIGHLIGHTER) Color.Yellow.copy(alpha = 0.4f) else Color.Red
+                                val width =
+                                    if (currentTool == ToolType.HIGHLIGHTER) 0.03f * size.width else 0.005f * size.width
+                                drawPath(
+                                    path = path,
+                                    color = color,
+                                    style = Stroke(
+                                        width = width,
+                                        cap = StrokeCap.Round,
+                                        join = StrokeJoin.Round
+                                    )
+                                )
+                            }
+
+                            if (currentTool == ToolType.BOX_SELECT) {
+                                val dimColor = Color.Black.copy(alpha = 0.4f)
+
+                                // 1. Nền tối toàn màn hình
+                                val outerPath = Path().apply {
+                                    addRect(Rect(0f, 0f, size.width, size.height))
+                                }
+
+                                // 2. Các vùng cần làm sáng (Lỗ thủng)
+                                val holesPath = Path()
+
+                                // Vùng đang kéo
+                                currentBoxSelection?.let { selection ->
+                                    holesPath.addRect(selection)
+                                }
+
+                                // Các ghi chú đã lưu
+                                pageNotes.noteBoxs.forEach { noteBox ->
+                                    val noteRect =
+                                        RectF(
+                                            noteBox.x,
+                                            noteBox.y,
+                                            noteBox.x + noteBox.width,
+                                            noteBox.y + noteBox.height
+                                        )
+                                    holesPath.addRect(noteRect.toScreenRect(viewSizeInt))
+                                }
+
+                                // 3. Trừ vùng lỗ khỏi nền tối (Sử dụng Path Operation Difference thay vì EvenOdd)
+                                // Điều này đảm bảo các lỗ hổng chồng nhau vẫn là lỗ hổng (Hole OR Hole = Hole)
+                                // thay vì bị lấp đầy lại (Hole XOR Hole = Fill) như EvenOdd.
+                                outerPath.op(outerPath, holesPath, PathOperation.Difference)
+
+                                drawPath(path = outerPath, color = dimColor)
+
+                                currentBoxSelection?.let { rect ->
+                                    drawRect(
+                                        color = Color(0xFF4285F4),
+                                        topLeft = rect.topLeft,
+                                        size = rect.size,
+                                        style = Stroke(
+                                            width = 2.dp.toPx() / currentScale,
+                                            pathEffect = PathEffect.dashPathEffect(
+                                                floatArrayOf(
+                                                    20f,
+                                                    20f
+                                                ), 0f
+                                            )
+                                        )
+                                    )
+                                }
                             }
                         }
                         // Vẽ Selection & Search & Handles (chỉ khi không dùng tool vẽ)
@@ -1299,6 +1457,19 @@ fun PdfPageItem(
                                     topLeft = rect.topLeft,
                                     size = rect.size
                                 )
+                            }
+
+                            pageNotes.noteTexts.forEach { note ->
+                                val rects = NoteTextConverters().toRectList(note.pointsJson)
+                                rects.forEach { r ->
+                                    val noteRect = RectF(r.left, r.top, r.right, r.bottom)
+                                    val screenRect = noteRect.toScreenRect(viewSizeInt)
+                                    drawRect(
+                                        color = Color(0x44FFFF00),
+                                        topLeft = screenRect.topLeft,
+                                        size = screenRect.size
+                                    )
+                                }
                             }
                             // Handles
                             handleData?.let { (first, last, style) ->
@@ -1342,7 +1513,6 @@ fun PdfPageItem(
                     }
                 }
         )
-
         // 2. Handle Touch Targets
         if (currentTool == ToolType.NONE && selectionState.selectedWords.isNotEmpty() && pageLayoutCoordinates != null) {
             val firstRect = selectionState.selectedWords.first().rect.toScreenRect(viewSize)
@@ -1386,7 +1556,7 @@ fun PdfPageItem(
 }
 
 @Composable
-fun NoteDialog(
+fun NoteBoxDialog(
     bitmap: Bitmap,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit
@@ -1438,22 +1608,60 @@ fun NoteDialog(
     )
 }
 
+@Composable
+fun NoteTextComment(
+    onSave: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var commentText by remember { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        delay(100)
+        focusRequester.requestFocus()
+    }
+    OutlinedTextField(
+        value = commentText,
+        onValueChange = { commentText = it },
+        label = { Text("Ghi chú") },
+        modifier = modifier
+            .fillMaxWidth()
+            .background(Color.White)
+            .padding(horizontal = 16.dp)
+            .focusRequester(focusRequester),
+        singleLine = false,
+        maxLines = 5,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(
+            onDone = {
+                if (commentText.isNotBlank()) {
+                    onSave(commentText)
+                }
+            }
+        )
+    )
+
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NoteListBottomSheet(
-    notes: Map<Int, List<Note>>,
+    notes: Map<Int, NoteBoxAndNoteText>,
     currentPage: Int,
-    loadNoteBitmap: suspend (Note) -> Bitmap?,
-    onNoteSelected: (Note) -> Unit,
-    onDeleteNote: (Note) -> Unit,
-    onUpdateNote: (Note) -> Unit,
+    loadNoteBitmap: suspend (NoteBox) -> Bitmap?,
+    onNoteBoxSelected: (NoteBox) -> Unit,
+    onDeleteNoteBox: (NoteBox) -> Unit,
+    onUpdateNoteBox: (NoteBox) -> Unit,
+    onNoteTextSelected: (NoteText) -> Unit,
+    onDeleteNoteText: (NoteText) -> Unit,
+    onUpdateNoteText: (NoteText) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState()
     val noteListState = rememberLazyListState()
 
     // Tự động cuộn đến vị trí gần trang hiện tại nhất
-    LaunchedEffect(notes, currentPage) {
+    LaunchedEffect(Unit) {
         if (notes.isNotEmpty()) {
             var scrollIndex = 0
             var found = false
@@ -1464,7 +1672,7 @@ fun NoteListBottomSheet(
                     break
                 }
                 // Header (1 item) + số lượng note trong trang
-                scrollIndex += 1 + notesOfPage.size
+                scrollIndex += 1 + notesOfPage.noteTexts.size + notesOfPage.noteBoxs.size
             }
             // Nếu tìm thấy, cuộn đến scrollIndex (Header của trang đó).
             // Nếu không (found=false), scrollIndex sẽ nằm ở cuối list -> cuộn xuống cuối (item cuối cùng).
@@ -1499,7 +1707,7 @@ fun NoteListBottomSheet(
                 notes.toSortedMap().forEach { (pageIndex, notesOfPage) ->
                     stickyHeader(
                         key = pageIndex,
-                        contentType = { pageIndex }
+                        contentType = { "page_${pageIndex}" }
                     ) {
                         Text(
                             text = "Trang ${pageIndex + 1}",
@@ -1512,13 +1720,21 @@ fun NoteListBottomSheet(
                                 .padding(4.dp)
                         )
                     }
-                    items(notesOfPage, key = { it.id }) { note ->
-                        NoteItem(
-                            note = note,
+                    items(notesOfPage.noteBoxs, key = { "box_${it.id}" }) { note ->
+                        NoteBoxItem(
+                            noteBox = note,
                             loadBitmap = { loadNoteBitmap(note) },
-                            onClick = { onNoteSelected(note) },
-                            onDelete = { onDeleteNote(note) },
-                            onEdit = { onUpdateNote(it) }
+                            onClick = { onNoteBoxSelected(note) },
+                            onDelete = { onDeleteNoteBox(note) },
+                            onEdit = { onUpdateNoteBox(it) }
+                        )
+                    }
+                    items(notesOfPage.noteTexts, key = { "text_${it.id}" }) { note ->
+                        NoteTextItem(
+                            noteText = note,
+                            onClick = { onNoteTextSelected(note) },
+                            onDelete = { onDeleteNoteText(note) },
+                            onEdit = { onUpdateNoteText(it) }
                         )
                     }
                 }
@@ -1529,15 +1745,15 @@ fun NoteListBottomSheet(
 
 @OptIn(FlowPreview::class)
 @Composable
-fun NoteItem(
-    note: Note,
+fun NoteBoxItem(
+    noteBox: NoteBox,
     loadBitmap: suspend () -> Bitmap?,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onEdit: (Note) -> Unit
+    onEdit: (NoteBox) -> Unit
 ) {
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var text by remember { mutableStateOf(note.text) }
+    var text by remember { mutableStateOf(noteBox.text) }
     var isFocused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
@@ -1547,8 +1763,8 @@ fun NoteItem(
         label = "SaveAlpha"
     )
 
-    LaunchedEffect(note) {
-        bitmap = loadBitmap()
+    LaunchedEffect(noteBox.id) {
+        if (bitmap == null) bitmap = loadBitmap()
     }
 
     Card(
@@ -1573,13 +1789,13 @@ fun NoteItem(
                     contentDescription = "Note",
                 )
                 Text(
-                    text = note.createdAt,
+                    text = noteBox.createdAt,
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 Button(
                     onClick = {
-                        onEdit(note.copy(text = text))
+                        onEdit(noteBox.copy(text = text))
                         focusManager.clearFocus()
                     },
                     enabled = text.isNotBlank(),
@@ -1605,6 +1821,95 @@ fun NoteItem(
                     .height(150.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(Color.LightGray)
+            )
+
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("Nội dung ghi chú") },
+                minLines = 2,
+                maxLines = 5,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { isFocused = it.isFocused },
+            )
+        }
+    }
+}
+
+@Composable
+fun NoteTextItem(
+    noteText: NoteText,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+    onEdit: (NoteText) -> Unit
+) {
+    var text by remember { mutableStateOf(noteText.comment) }
+    var isFocused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+
+    val alpha by animateFloatAsState(
+        targetValue = if (isFocused) 1f else 0f,
+        animationSpec = tween(durationMillis = 300),
+        label = "SaveAlpha"
+    )
+
+    Card(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.baseline_sticky_note_2_24),
+                    contentDescription = "Note",
+                )
+                Text(
+                    text = noteText.createdAt,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Button(
+                    onClick = {
+                        onEdit(noteText.copy(comment = text))
+                        focusManager.clearFocus()
+                    },
+                    enabled = text.isNotBlank(),
+                    modifier = Modifier.alpha(alpha)
+                ) {
+                    Text("Lưu")
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        painter = painterResource(R.drawable.outline_delete_24),
+                        contentDescription = "Delete",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Text(
+                text = noteText.text,
+                style = MaterialTheme.typography.bodyMedium,
+                fontStyle = FontStyle.Italic,
+                minLines = 2,
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.LightGray)
+                    .padding(8.dp)
             )
 
             OutlinedTextField(
@@ -1751,27 +2056,27 @@ fun RectF.toScreenRect(viewSize: IntSize): Rect {
     )
 }
 
-fun mergeRectangles(rects: List<Rect>): List<Rect> {
+fun mergeRectangles(rects: List<RectF>): List<RectF> {
     if (rects.isEmpty()) return emptyList()
 
     val sorted = rects.sortedWith(compareBy({ it.top }, { it.left }))
-    val merged = mutableListOf<Rect>()
+    val merged = mutableListOf<RectF>()
     var current = sorted[0]
 
     for (i in 1 until sorted.size) {
         val next = sorted[i]
 
         // Kiểm tra xem có cùng dòng không dựa trên độ lệch tâm Y
-        val centerYDiff = abs(current.center.y - next.center.y)
-        val avgHeight = (current.height + next.height) / 2
+        val centerYDiff = abs(current.centerY() - next.centerY())
+        val avgHeight = (current.height() + next.height()) / 2
 
         if (centerYDiff < avgHeight * 0.5f) {
             // Cùng dòng -> Gộp lại (bao gồm cả khoảng trắng ở giữa)
-            current = Rect(
-                left = minOf(current.left, next.left),
-                top = minOf(current.top, next.top),
-                right = maxOf(current.right, next.right),
-                bottom = maxOf(current.bottom, next.bottom)
+            current = RectF(
+                minOf(current.left, next.left),
+                minOf(current.top, next.top),
+                maxOf(current.right, next.right),
+                maxOf(current.bottom, next.bottom)
             )
         } else {
             // Khác dòng -> Lưu dòng cũ, bắt đầu dòng mới

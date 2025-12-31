@@ -9,7 +9,7 @@ import java.util.Date
 import java.util.Locale
 
 @Entity(
-    tableName = "notes",
+    tableName = "note_boxs",
     foreignKeys = [
         ForeignKey(
             entity = Document::class,
@@ -20,7 +20,7 @@ import java.util.Locale
         )
     ]
 )
-data class Note(
+data class NoteBox(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     @ColumnInfo(name = "document_id", index = true)

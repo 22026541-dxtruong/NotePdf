@@ -57,11 +57,6 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
-    //Pdf
-    implementation(libs.androidx.pdf.compose)
-    implementation(libs.androidx.pdf.viewer.fragment)
-    implementation(libs.androidx.pdf.ink)
-    implementation(libs.androidx.pdf.document.service)
     //Nav3
     implementation(libs.androidx.navigation3.ui)
     implementation(libs.androidx.navigation3.runtime)
@@ -81,7 +76,9 @@ dependencies {
     implementation(libs.play.services.mlkit.document.scanner)
     //Coil
     implementation(libs.coil.compose)
+    //Splash Screen
     implementation(libs.androidx.core.splashscreen)
+    //Json
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)

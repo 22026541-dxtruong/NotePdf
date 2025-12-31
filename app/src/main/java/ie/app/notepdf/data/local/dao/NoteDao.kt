@@ -4,25 +4,35 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Update
-import ie.app.notepdf.data.local.entity.Note
+import ie.app.notepdf.data.local.entity.NoteBox
+import ie.app.notepdf.data.local.entity.NoteText
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface NoteDao {
 
-    @Query("SELECT * FROM notes WHERE document_id = :documentId")
-    fun getNotesForDocument(documentId: Long): Flow<List<Note>>
+    @Query("SELECT * FROM note_boxs WHERE document_id = :documentId")
+    fun getNoteBoxsForDocument(documentId: Long): Flow<List<NoteBox>>
 
-    @Query("SELECT * FROM notes WHERE id = :noteId")
-    suspend fun getNoteById(noteId: Long): Note?
+    @Query("SELECT * FROM note_texts WHERE document_id = :documentId")
+    fun getNoteTextsForDocument(documentId: Long): Flow<List<NoteText>>
 
-    @Query("DELETE FROM notes WHERE id = :noteId")
-    suspend fun deleteNote(noteId: Long)
+    @Query("DELETE FROM note_texts WHERE id = :noteTextId")
+    suspend fun deleteNoteText(noteTextId: Long)
+
+    @Query("DELETE FROM note_boxs WHERE id = :noteBoxId")
+    suspend fun deleteNoteBox(noteBoxId: Long)
 
     @Insert
-    suspend fun insertNote(note: Note): Long
+    suspend fun insertNoteBox(noteBox: NoteBox): Long
 
     @Update
-    suspend fun updateNote(note: Note)
+    suspend fun updateNoteBox(noteBox: NoteBox)
+
+    @Insert
+    suspend fun insertNoteText(noteText: NoteText): Long
+
+    @Update
+    suspend fun updateNoteText(noteText: NoteText)
 
 }

@@ -71,7 +71,6 @@ dependencies {
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.room.ktx)
     //ML Kit
-    implementation(libs.digital.ink.recognition)
     implementation(libs.text.recognition)
     implementation(libs.play.services.mlkit.document.scanner)
     //Coil

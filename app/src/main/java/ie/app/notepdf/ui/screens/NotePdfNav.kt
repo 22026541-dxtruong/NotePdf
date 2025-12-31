@@ -10,7 +10,6 @@ import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
 import androidx.navigation3.ui.NavDisplay
 import ie.app.notepdf.ui.screens.home.HomeScreen
 import ie.app.notepdf.ui.screens.pdf.PdfScreen
-import ie.app.notepdf.ui.screens.setting.SettingScreen
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -18,9 +17,6 @@ data object Home : NavKey
 
 @Serializable
 data class Pdf(val documentId: Long, val name: String) : NavKey
-
-@Serializable
-data object Setting : NavKey
 
 @Composable
 fun NotePdfNav(
@@ -39,7 +35,6 @@ fun NotePdfNav(
         entryProvider = entryProvider {
             entry<Home> {
                 HomeScreen(
-                    onSettingClick = { backStack.add(Setting) },
                     onPdfClick = { backStack.add(Pdf(it.id, name = it.name)) }
                 )
             }
@@ -49,9 +44,6 @@ fun NotePdfNav(
                     documentName = key.name,
                     onBack = { backStack.removeLastOrNull() }
                 )
-            }
-            entry<Setting> {
-                SettingScreen()
             }
         }
     )

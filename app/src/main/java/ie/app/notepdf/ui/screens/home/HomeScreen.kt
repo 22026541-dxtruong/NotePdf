@@ -1,10 +1,12 @@
 package ie.app.notepdf.ui.screens.home
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.Image
@@ -71,6 +73,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import coil3.compose.AsyncImage
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import ie.app.notepdf.R
 import ie.app.notepdf.data.local.entity.Document
 import ie.app.notepdf.data.local.entity.Folder
@@ -95,7 +100,6 @@ enum class View {
 
 @Composable
 fun HomeScreen(
-    onSettingClick: () -> Unit = {},
     onPdfClick: (Document) -> Unit = {},
     @SuppressLint("ModifierParameter")
     modifier: Modifier = Modifier,
@@ -126,6 +130,35 @@ fun HomeScreen(
         }
     }
 
+    val options = remember {
+        GmsDocumentScannerOptions.Builder()
+            .setGalleryImportAllowed(true)
+            .setResultFormats(
+                GmsDocumentScannerOptions.RESULT_FORMAT_JPEG,
+                GmsDocumentScannerOptions.RESULT_FORMAT_PDF
+            )
+            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+            .build()
+    }
+
+    val scanner = remember { GmsDocumentScanning.getClient(options) }
+
+    val scannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        when (result.resultCode) {
+            Activity.RESULT_OK -> {
+                val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
+
+                scanResult?.pdf?.let { pdf ->
+                    val pdfUri = pdf.uri
+                    selectedPdfUri = pdfUri
+                    openUploadFileDialog = true
+                }
+            }
+        }
+    }
+
     BackHandler {
         viewModel.goBackFolder()
     }
@@ -136,6 +169,7 @@ fun HomeScreen(
             fileName = viewModel.getFileName(context, selectedPdfUri!!) ?: "Unnamed.pdf",
             thumbnail = viewModel.getPdfMetadata(context, selectedPdfUri!!).first,
             onDismissRequest = {
+                viewModel.deleteTempFile(context, selectedPdfUri!!)
                 openUploadFileDialog = false
                 selectedPdfUri = null
             },
@@ -209,7 +243,12 @@ fun HomeScreen(
                 enterFolder = { folderId, _ ->
                     viewModel.getFolderStackAndEnterFolder(folderId)
                 },
-                onSettingClick = onSettingClick
+                onScannerClick = {
+                    scanner.getStartScanIntent(context as Activity)
+                        .addOnSuccessListener { intentSender ->
+                            scannerLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+                        }
+                }
             )
         },
         floatingActionButton = {
@@ -326,7 +365,7 @@ fun HomeTopBar(
     onSearchQueryChanged: (String) -> Unit,
     enterFolder: (Long, String) -> Unit = { _, _ -> },
     openFile: (Document) -> Unit = {},
-    onSettingClick: () -> Unit = {},
+    onScannerClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
 
@@ -394,10 +433,10 @@ fun HomeTopBar(
         },
         actions = {
             IconButton(
-                onClick = onSettingClick
+                onClick = onScannerClick
             ) {
                 Icon(
-                    painter = painterResource(R.drawable.outline_settings_24),
+                    painter = painterResource(R.drawable.baseline_document_scanner_24),
                     contentDescription = "Setting"
                 )
             }

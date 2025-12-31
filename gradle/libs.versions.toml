@@ -2,7 +2,6 @@
 agp = "8.13.2"
 coilCompose = "3.3.0"
 coreSplashscreen = "1.2.0"
-digitalInkRecognition = "19.0.0"
 playServicesMlkitDocumentScanner = "16.0.0"
 textRecognition = "16.0.1"
 kotlin = "2.3.0"
@@ -33,7 +32,6 @@ androidx-navigation3-runtime = { module = "androidx.navigation3:navigation3-runt
 androidx-navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "nav3Core" }
 androidx-lifecycle-viewmodel-navigation3 = { module = "androidx.lifecycle:lifecycle-viewmodel-navigation3", version.ref = "lifecycleViewmodelNav3" }
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coilCompose" }
-digital-ink-recognition = { module = "com.google.mlkit:digital-ink-recognition", version.ref = "digitalInkRecognition" }
 play-services-mlkit-document-scanner = { module = "com.google.android.gms:play-services-mlkit-document-scanner", version.ref = "playServicesMlkitDocumentScanner" }
 text-recognition = { module = "com.google.mlkit:text-recognition", version.ref = "textRecognition" }
 hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hiltAndroid" }

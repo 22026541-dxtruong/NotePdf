@@ -255,6 +255,7 @@ class HomeViewModel @Inject constructor(
                 )
 
                 fileSystemRepository.insertDocument(document)
+                deleteTempFile(context, uri)
             } else {
                 // Xử lý lỗi nếu không copy được file
                 Log.e("Upload", "Failed to copy file to internal storage")
@@ -264,8 +265,21 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun deleteTempFile(context: Context, fileUri: Uri) {
+        if (fileUri.authority?.contains("gms") == true) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    context.contentResolver.delete(fileUri, null, null)
+                    Log.d("Scanner", "Đã dọn dẹp cache Google thành công")
+                } catch (e: Exception) {
+                    Log.w("Scanner", "Không thể xóa cache: ${e.message}")
+                }
+            }
+        }
+    }
+
     fun deleteFile(document: Document) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             // Xóa file PDF gốc trong máy
             document.uri.let { path ->
                 val file = File(path)

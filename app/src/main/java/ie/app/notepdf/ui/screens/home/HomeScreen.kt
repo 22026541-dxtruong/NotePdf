@@ -94,10 +94,6 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 
-enum class View {
-    LIST, GRID
-}
-
 @Composable
 fun HomeScreen(
     onPdfClick: (Document) -> Unit = {},
@@ -109,8 +105,8 @@ fun HomeScreen(
 
     val uiState by viewModel.uiState.collectAsState()
     val searchResult by viewModel.searchResult.collectAsState()
+    val isGrid by viewModel.isGridMode.collectAsState()
 
-    var view by remember { mutableStateOf(View.LIST) }
     var selectedFolder by remember { mutableStateOf<Folder?>(null) }
     var selectedDocument by remember { mutableStateOf<Document?>(null) }
 
@@ -159,6 +155,12 @@ fun HomeScreen(
         }
     }
 
+    LaunchedEffect(Unit) {
+        viewModel.eventImportSuccess.collect { newDoc ->
+            onPdfClick(newDoc)
+        }
+    }
+
     BackHandler {
         viewModel.goBackFolder()
     }
@@ -203,8 +205,8 @@ fun HomeScreen(
         FolderBottomSheet(
             folderStack = uiState.folderStack,
             isMove = selectedFolder != null || selectedDocument != null,
-            view = view,
-            onViewChange = { view = it },
+            isGrid = isGrid,
+            onViewChange = viewModel::toggleLayout,
             movingFolderId = selectedFolder?.id,
             folders = uiState.folderWithSub?.subFolders ?: emptyList(),
             jumpToFolder = viewModel::jumpToFolder,
@@ -278,22 +280,25 @@ fun HomeScreen(
                 }
                 Spacer(Modifier.weight(1f))
                 SingleChoiceSegmentedButtonRow {
-                    View.entries.forEachIndexed { index, otherView ->
-                        SegmentedButton(
-                            selected = view == otherView,
-                            onClick = { view = otherView },
-                            shape = SegmentedButtonDefaults.itemShape(index, View.entries.size)
-                        ) {
-                            Icon(
-                                painter = painterResource(
-                                    when (otherView) {
-                                        View.GRID -> R.drawable.outline_grid_view_24
-                                        View.LIST -> R.drawable.outline_list_24
-                                    }
-                                ),
-                                contentDescription = "$otherView"
-                            )
-                        }
+                    SegmentedButton(
+                        selected = !isGrid,
+                        onClick = { viewModel.toggleLayout(false) },
+                        shape = SegmentedButtonDefaults.itemShape(0, 2)
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_list_24),
+                            contentDescription = "List"
+                        )
+                    }
+                    SegmentedButton(
+                        selected = isGrid,
+                        onClick = { viewModel.toggleLayout(true) },
+                        shape = SegmentedButtonDefaults.itemShape(1, 2)
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.outline_grid_view_24),
+                            contentDescription = "List"
+                        )
                     }
                 }
             }
@@ -302,7 +307,7 @@ fun HomeScreen(
                 thickness = 1.dp,
             )
             AnimatedContent(
-                targetState = view == View.GRID
+                targetState = isGrid
             ) {
                 when (it) {
                     true -> HomeGridLayout(
@@ -326,7 +331,8 @@ fun HomeScreen(
                         moveFile = {
                             selectedDocument = it
                             showFolderSheet = true
-                        }
+                        },
+                        shareFile = { document ->  viewModel.shareDocument(context, document) }
                     )
 
                     false -> HomeLinearLayout(
@@ -350,7 +356,8 @@ fun HomeScreen(
                         moveFile = {
                             selectedDocument = it
                             showFolderSheet = true
-                        }
+                        },
+                        shareFile = { document ->  viewModel.shareDocument(context, document) }
                     )
                 }
             }
@@ -769,8 +776,8 @@ fun FolderBottomSheet(
     folderStack: List<Pair<Long, String>>,
     folders: List<Folder>,
     isMove: Boolean = false,
-    view: View = View.LIST,
-    onViewChange: (View) -> Unit = {},
+    isGrid: Boolean,
+    onViewChange: (Boolean) -> Unit = {},
     movingFolderId: Long? = null,
     onDismiss: () -> Unit,
     onCancel: () -> Unit,
@@ -815,28 +822,31 @@ fun FolderBottomSheet(
         ) {
             Spacer(modifier = Modifier.weight(1f))
             SingleChoiceSegmentedButtonRow {
-                View.entries.forEachIndexed { index, otherView ->
-                    SegmentedButton(
-                        selected = view == otherView,
-                        onClick = { onViewChange(otherView) },
-                        shape = SegmentedButtonDefaults.itemShape(index, View.entries.size)
-                    ) {
-                        Icon(
-                            painter = painterResource(
-                                when (otherView) {
-                                    View.GRID -> R.drawable.outline_grid_view_24
-                                    View.LIST -> R.drawable.outline_list_24
-                                }
-                            ),
-                            contentDescription = "$otherView"
-                        )
-                    }
+                SegmentedButton(
+                    selected = !isGrid,
+                    onClick = { onViewChange(false) },
+                    shape = SegmentedButtonDefaults.itemShape(0, 2)
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.outline_list_24),
+                        contentDescription = "List"
+                    )
+                }
+                SegmentedButton(
+                    selected = isGrid,
+                    onClick = { onViewChange(true) },
+                    shape = SegmentedButtonDefaults.itemShape(1, 2)
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.outline_grid_view_24),
+                        contentDescription = "List"
+                    )
                 }
             }
         }
 
         AnimatedContent(
-            targetState = view == View.GRID,
+            targetState = isGrid,
             modifier = Modifier.weight(1f)
         ) {
             when (it) {

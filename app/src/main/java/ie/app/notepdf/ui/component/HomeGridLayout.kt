@@ -47,6 +47,7 @@ fun HomeGridLayout(
     deleteFile: (Document) -> Unit = {},
     editFileName: (Document) -> Unit = {},
     moveFile: (Document) -> Unit = {},
+    shareFile: (Document) -> Unit = {},
     openFile: (Document) -> Unit = {}
 ) {
     folderWithSub?.let {
@@ -74,6 +75,7 @@ fun HomeGridLayout(
                     deleteFile,
                     editFileName,
                     moveFile,
+                    shareFile,
                     openFile,
                     modifier = Modifier
                         .width(120.dp)
@@ -176,6 +178,7 @@ fun GridFileItem(
     deleteFile: (Document) -> Unit = {},
     editFileName: (Document) -> Unit = {},
     moveFile: (Document) -> Unit = {},
+    shareFile: (Document) -> Unit = {},
     openFile: (Document) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -229,6 +232,16 @@ fun GridFileItem(
                         Icon(
                             painter = painterResource(R.drawable.outline_drive_file_move_24),
                             contentDescription = "Move"
+                        )
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Chia sẻ") },
+                    onClick = { shareFile(pdf) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.baseline_share_24),
+                            contentDescription = "Share"
                         )
                     }
                 )

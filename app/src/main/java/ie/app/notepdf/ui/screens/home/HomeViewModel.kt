@@ -1,11 +1,14 @@
 package ie.app.notepdf.ui.screens.home
 
+import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -25,8 +28,12 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import androidx.core.graphics.createBitmap
 import ie.app.notepdf.data.local.relation.FoldersAndDocuments
+import ie.app.notepdf.di.IntentManager
+import ie.app.notepdf.di.LayoutSettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
@@ -42,8 +49,17 @@ data class HomeUiState(
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val fileSystemRepository: FileSystemRepository
+    private val fileSystemRepository: FileSystemRepository,
+    private val intentManager: IntentManager,
+    private val layoutSettingsManager: LayoutSettingsManager,
+    application: Application
 ) : ViewModel() {
+    val isGridMode: StateFlow<Boolean> = layoutSettingsManager.isGridMode
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = false
+        )
     private val _currentFolderId = MutableStateFlow(1L)
 
     private val _folderStack = MutableStateFlow(listOf(1L to "Home"))
@@ -82,6 +98,31 @@ class HomeViewModel @Inject constructor(
         initialValue = HomeUiState(isLoading = true)
     )
 
+    private val _eventImportSuccess = MutableSharedFlow<Document>()
+    val eventImportSuccess = _eventImportSuccess.asSharedFlow()
+
+    init {
+        observeIncomingIntent(application)
+    }
+
+    fun observeIncomingIntent(context: Context) {
+        viewModelScope.launch {
+            intentManager.incomingUri.collect { uri ->
+                uri?.let {
+                    val fileName = getFileName(context, it) ?: "Imported.pdf"
+                    uploadFile(context, it, fileName)
+                    intentManager.clear()
+                }
+            }
+        }
+    }
+
+    fun toggleLayout(mode: Boolean) {
+        viewModelScope.launch {
+            layoutSettingsManager.setGridMode(mode)
+        }
+    }
+
     fun enterFolder(folderId: Long, folderName: String) {
         if (_currentFolderId.value == folderId) return
 
@@ -98,7 +139,6 @@ class HomeViewModel @Inject constructor(
             _currentFolderId.value = folderId
         }
     }
-
 
     fun goBackFolder(): Boolean {
         val stack = _folderStack.value
@@ -254,8 +294,10 @@ class HomeViewModel @Inject constructor(
                     parentId = currentFolderId
                 )
 
-                fileSystemRepository.insertDocument(document)
+                val newId = fileSystemRepository.insertDocument(document)
                 deleteTempFile(context, uri)
+
+                _eventImportSuccess.emit(document.copy(id = newId))
             } else {
                 // Xử lý lỗi nếu không copy được file
                 Log.e("Upload", "Failed to copy file to internal storage")
@@ -294,6 +336,34 @@ class HomeViewModel @Inject constructor(
 
             // Xóa trong Room
             fileSystemRepository.deleteDocument(document)
+        }
+    }
+
+    fun shareDocument(context: Context, document: Document) {
+        val file = File(document.uri) // 'document.uri' là đường dẫn nội bộ bạn đã lưu
+        if (!file.exists()) {
+            Log.e("Share", "File không tồn tại: ${document.uri}")
+            return
+        }
+
+        try {
+            // Tạo URI an toàn thông qua FileProvider
+            val contentUri: Uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider", // Phải trùng với authority trong Manifest
+                file
+            )
+
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, contentUri)
+                putExtra(Intent.EXTRA_SUBJECT, "Sharing PDF: ${document.name}")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) // Quan trọng để ứng dụng khác đọc được file
+            }
+
+            context.startActivity(Intent.createChooser(shareIntent, "Chia sẻ file PDF"))
+        } catch (e: Exception) {
+            Log.e("Share", "Lỗi khi chia sẻ file", e)
         }
     }
 }

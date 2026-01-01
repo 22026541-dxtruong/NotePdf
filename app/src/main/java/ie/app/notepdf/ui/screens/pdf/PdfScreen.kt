@@ -54,6 +54,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -367,7 +369,8 @@ fun PdfScreen(
                 nextMatch = viewModel::nextMatch,
                 prevMatch = viewModel::prevMatch,
                 currentMatchIndex = currentMatchIndex,
-                onShowNoteList = { showNoteListSheet = true }
+                onShowNoteList = { showNoteListSheet = true },
+                onToolSelected = { viewModel.setTool(ToolType.NONE) }
             )
         },
         floatingActionButton = {
@@ -571,7 +574,8 @@ fun PdfTopBar(
     prevMatch: () -> Unit = {},
     searchResults: List<SearchMatch> = emptyList(),
     onBack: () -> Unit = {},
-    onShowNoteList: () -> Unit = {}
+    onShowNoteList: () -> Unit = {},
+    onToolSelected: () -> Unit = {},
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
 
@@ -614,6 +618,7 @@ fun PdfTopBar(
                 } else {
                     onBack()
                 }
+                onToolSelected()
             }) {
                 Icon(
                     painter = painterResource(R.drawable.outline_arrow_back_24),
@@ -646,6 +651,7 @@ fun PdfTopBar(
                 IconButton(onClick = {
                     isSearchVisible = false
                     clearSearch()
+                    onToolSelected()
                 }) {
                     Icon(
                         painter = painterResource(R.drawable.baseline_clear_24),
@@ -672,13 +678,19 @@ fun PdfTopBar(
                     )
                 }
             } else {
-                IconButton(onClick = onCommentModeChanged) {
+                IconButton(onClick = {
+                    onCommentModeChanged()
+                    onToolSelected()
+                }) {
                     Icon(
                         painter = painterResource(if (commentMode) R.drawable.outline_edit_off_24 else R.drawable.baseline_edit_document_24),
                         contentDescription = "Edit"
                     )
                 }
-                IconButton(onClick = onShowNoteList) {
+                IconButton(onClick = {
+                    onShowNoteList()
+                    onToolSelected()
+                }) {
                     Icon(
                         painter = painterResource(R.drawable.outline_comment_24),
                         contentDescription = "Comment"
@@ -1718,23 +1730,28 @@ fun NoteListBottomSheet(
                                     RoundedCornerShape(8.dp)
                                 )
                                 .padding(4.dp)
+                                .animateItem()
                         )
                     }
                     items(notesOfPage.noteBoxs, key = { "box_${it.id}" }) { note ->
                         NoteBoxItem(
+                            sheetState = sheetState,
                             noteBox = note,
                             loadBitmap = { loadNoteBitmap(note) },
                             onClick = { onNoteBoxSelected(note) },
                             onDelete = { onDeleteNoteBox(note) },
-                            onEdit = { onUpdateNoteBox(it) }
+                            onEdit = { onUpdateNoteBox(it) },
+                            modifier = Modifier.animateItem()
                         )
                     }
                     items(notesOfPage.noteTexts, key = { "text_${it.id}" }) { note ->
                         NoteTextItem(
+                            sheetState = sheetState,
                             noteText = note,
                             onClick = { onNoteTextSelected(note) },
                             onDelete = { onDeleteNoteText(note) },
-                            onEdit = { onUpdateNoteText(it) }
+                            onEdit = { onUpdateNoteText(it) },
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }
@@ -1743,14 +1760,16 @@ fun NoteListBottomSheet(
     }
 }
 
-@OptIn(FlowPreview::class)
+@OptIn(FlowPreview::class, ExperimentalMaterial3Api::class)
 @Composable
 fun NoteBoxItem(
+    sheetState: SheetState,
     noteBox: NoteBox,
     loadBitmap: suspend () -> Bitmap?,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onEdit: (NoteBox) -> Unit
+    onEdit: (NoteBox) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var text by remember { mutableStateOf(noteBox.text) }
@@ -1763,13 +1782,24 @@ fun NoteBoxItem(
         label = "SaveAlpha"
     )
 
+    LaunchedEffect(isFocused) {
+        if (isFocused) sheetState.expand()
+    }
+
+    LaunchedEffect(sheetState.currentValue) {
+        if (sheetState.currentValue == SheetValue.PartiallyExpanded ||
+            sheetState.currentValue == SheetValue.Hidden) {
+            focusManager.clearFocus()
+        }
+    }
+
     LaunchedEffect(noteBox.id) {
         if (bitmap == null) bitmap = loadBitmap()
     }
 
     Card(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
     ) {
@@ -1837,12 +1867,15 @@ fun NoteBoxItem(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NoteTextItem(
+    sheetState: SheetState,
     noteText: NoteText,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onEdit: (NoteText) -> Unit
+    onEdit: (NoteText) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var text by remember { mutableStateOf(noteText.comment) }
     var isFocused by remember { mutableStateOf(false) }
@@ -1854,9 +1887,20 @@ fun NoteTextItem(
         label = "SaveAlpha"
     )
 
+    LaunchedEffect(isFocused) {
+        if (isFocused) sheetState.expand()
+    }
+
+    LaunchedEffect(sheetState.currentValue) {
+        if (sheetState.currentValue == SheetValue.PartiallyExpanded ||
+            sheetState.currentValue == SheetValue.Hidden) {
+            focusManager.clearFocus()
+        }
+    }
+
     Card(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
     ) {

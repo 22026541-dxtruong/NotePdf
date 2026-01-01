@@ -46,6 +46,7 @@ fun HomeLinearLayout(
     deleteFile: (Document) -> Unit = {},
     editFileName: (Document) -> Unit = {},
     moveFile: (Document) -> Unit = {},
+    shareFile: (Document) -> Unit = {},
     openFile: (Document) -> Unit = {}
 ) {
     folderWithSub?.let {
@@ -70,6 +71,7 @@ fun HomeLinearLayout(
                     deleteFile,
                     editFileName,
                     moveFile,
+                    shareFile,
                     openFile,
                     modifier = Modifier
                         .animateItem()
@@ -156,6 +158,7 @@ fun LinearFileItem(
     deleteFile: (Document) -> Unit = {},
     editFileName: (Document) -> Unit = {},
     moveFile: (Document) -> Unit = {},
+    shareFile: (Document) -> Unit = {},
     openFile: (Document) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -211,6 +214,16 @@ fun LinearFileItem(
                         Icon(
                             painter = painterResource(R.drawable.outline_drive_file_move_24),
                             contentDescription = "Move"
+                        )
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Chia sẻ") },
+                    onClick = { shareFile(pdf) },
+                    leadingIcon = {
+                        Icon(
+                            painter = painterResource(R.drawable.baseline_share_24),
+                            contentDescription = "Share"
                         )
                     }
                 )

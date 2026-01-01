@@ -375,7 +375,7 @@ fun PdfScreen(
         },
         floatingActionButton = {
             PdfFabMenu(
-                isActiveOfFab && commentMode,
+                isActiveOfFab && commentMode && !selectionTextMode,
                 currentTool,
                 onToolSelected = viewModel::setTool,
                 onUndo = viewModel::undo,
